@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-K230 + D36A 二维步进云台黑色矩形视觉追踪 v3.6（最终矩形追踪版）
+K230 + D36A 二维步进云台矩形-激光闭环追踪 v5.0（单控制器优化版）
 
 运行环境：CanMV IDE K230 / MicroPython
 视觉基准：main_k230_rect_track_uart_v13_speed_recovery.py
@@ -28,7 +28,7 @@ K230 + D36A 二维步进云台黑色矩形视觉追踪 v3.6（最终矩形追踪
     GND    -> D36A GND、USB-TTL GND
 
 D36A 的 EN1、EN2 不接 K230，必须并接到驱动板自身的 5V，保持硬件持续使能。
-本版不初始化 GPIO35。严禁把 D36A 的 5V 接到任何 K230 GPIO。
+GPIO35用于激光TTL控制。严禁把 D36A 的 5V 接到任何 K230 GPIO。
 
 默认 plotMode=0，坐标维持640x480逻辑尺度：
 [plot,err_x,err_y,x_target_hz,y_target_hz,x_output_hz,y_output_hz,
@@ -111,6 +111,13 @@ SENSOR_INPUT_WIDTH = 1280
 SENSOR_INPUT_HEIGHT = 960
 SENSOR_FPS = 90
 
+# v4.1关键修正：
+# 矩形检测继续使用320x240 RGB888，供cv_lite和to_numpy_ref使用；
+# 激光检测单独使用320x240 RGB565，因为当前CanMV v1.4.3的
+# find_blobs颜色/LAB链路在RGB888通道上可能持续返回0候选。
+RECT_CHANNEL = CAM_CHN_ID_0
+LASER_CHANNEL = CAM_CHN_ID_1
+
 # ============================================================
 # 2. D36A STEP/DIR 硬件配置
 # ============================================================
@@ -155,8 +162,8 @@ MICROSTEP = 16
 PULSES_PER_REV = MOTOR_FULL_STEPS_PER_REV * MICROSTEP
 
 # 相对启动位置的软件保护。0 表示关闭；启动前应手动把云台放在中间安全位置。
-X_SOFT_LIMIT_STEPS = 3200.0
-Y_SOFT_LIMIT_STEPS = 1422.0
+X_SOFT_LIMIT_STEPS = 6400.0
+Y_SOFT_LIMIT_STEPS = 2844.0
 
 # ============================================================
 # 3. 矩形检测与目标估计参数（沿用 v13 基线）
@@ -178,17 +185,17 @@ RECT_CFG = {
     "target_aspect": 1.50,
 
     # 候选质量分层：同一遍检测结果先关联高置信度，再关联低置信度。
-    "quality_high": 0.36,
-    "quality_low": 0.18,
-    "quality_search_recover": 0.30,
+    "quality_high": 0.38,
+    "quality_low": 0.15,
+    "quality_search_recover": 0.32,
     "max_candidates": 18,
 
     # cv_lite轮廓检测参数。原生find_rects在本机超过45ms时会自动停用。
     "cv_canny_low": 22,
     "cv_canny_high": 84,
-    "cv_approx_epsilon": 0.0205,
-    "cv_area_min_ratio": 0.0012,
-    "cv_max_angle_cos": 0.40,
+    "cv_approx_epsilon": 0.0230,
+    "cv_area_min_ratio": 0.0010,
+    "cv_max_angle_cos": 0.46,
     "cv_gaussian_blur_size": 3,
     "native_enable": False,
     "native_slow_ms": 45.0,
@@ -205,19 +212,19 @@ RECT_CFG = {
     "low_stage_min_ring": 0.16,
 
     # 动态ROI。锁定后主要只在预测窗口内检测。
-    "roi_scale_w": 3.30,
-    "roi_scale_h": 3.40,
+    "roi_scale_w": 4.20,
+    "roi_scale_h": 4.10,
     "roi_min_w": 150,
     "roi_min_h": 120,
-    "roi_velocity_lead_s": 0.120,
+    "roi_velocity_lead_s": 0.160,
     "roi_velocity_margin_gain": 0.16,
-    "roi_extra_margin": 22,
-    "full_scan_interval": 8,
+    "roi_extra_margin": 32,
+    "full_scan_interval": 12,
     "full_scan_after_miss": 1,
 
     # 亚像素角点仅对最终选中候选运行，失败会自动退回原生角点。
     "corner_refine_enable": True,
-    "corner_refine_every": 1,
+    "corner_refine_every": 2,
     "corner_refine_window": 4,
     "corner_refine_max_shift": 7.0,
     "corner_refine_pad": 8,
@@ -227,39 +234,39 @@ RECT_CFG = {
 TRACK_CFG = {
     "acquire_frames": 2,
     "reacquire_frames": 2,
-    "max_coast_frames": 8,
+    "max_coast_frames": 5,
     "keep_track_ms": 5000,
-    "control_lead_s": 0.046,
+    "control_lead_s": 0.014,
 
-    "gate_tracking_px": 155.0,
-    "gate_reacquire_px": 280.0,
+    "gate_tracking_px": 105.0,
+    "gate_reacquire_px": 210.0,
     "acquire_jump_px": 95.0,
-    "max_area_ratio_tracking": 3.2,
+    "max_area_ratio_tracking": 2.5,
     "max_area_ratio_reacquire": 5.4,
-    "max_aspect_delta_tracking": 0.42,
+    "max_aspect_delta_tracking": 0.32,
     "max_aspect_delta_reacquire": 0.58,
 
     # 抗干扰跳变保护：非高质量、非黑白环结构的候选不得从上一帧目标处大幅跳转。
-    "jump_guard_px": 95.0,
+    "jump_guard_px": 68.0,
     "jump_guard_quality": 0.48,
     "jump_guard_ring": 0.18,
     "jump_guard_contrast": 12.0,
 
-    "kalman_accel_noise": 500.0,
-    "measurement_var_detect": 10.0,
+    "kalman_accel_noise": 420.0,
+    "measurement_var_detect": 16.0,
 
     # COAST恢复帧与低置信度候选不应立即强校正，避免速度估计尖峰。
     "measurement_var_recover_scale": 1.20,
     "measurement_var_low_scale": 2.20,
 
     # 限制不可信的Kalman速度，并在连续漏检时逐帧衰减。
-    "max_velocity_x_px_s": 560.0,
-    "max_velocity_y_px_s": 500.0,
-    "coast_velocity_decay": 0.94,
+    "max_velocity_x_px_s": 500.0,
+    "max_velocity_y_px_s": 440.0,
+    "coast_velocity_decay": 0.86,
 
     # 控制中心前瞻位移限制。
-    "max_lead_x_px": 92.0,
-    "max_lead_y_px": 58.0,
+    "max_lead_x_px": 55.0,
+    "max_lead_y_px": 42.0,
 
     "initial_pos_var": 90.0,
     "initial_vel_var": 120000.0,
@@ -276,52 +283,52 @@ FAST_ERR_START_PX = 20.0
 
 PID_CFG = {
     # 输出单位为 STEP Hz，不再是舵机角度增量。
-    "x_kp": 5.15,
+    "x_kp": 6.00,
     "x_ki": 0.000,
-    "x_kd": 0.125,
-    "x_deadzone_px": 3.0,
+    "x_kd": 0.145,
+    "x_deadzone_px": 0.8,
 
-    "y_kp": 4.30,
+    "y_kp": 4.75,
     "y_ki": 0.000,
-    "y_kd": 0.120,
-    "y_deadzone_px": 4.0,
+    "y_kd": 0.145,
+    "y_deadzone_px": 1.5,
 
     "integral_limit": 180.0,
-    "derivative_tau_s": 0.090,
+    "derivative_tau_s": 0.070,
 }
 
 MOTION_CFG = {
-    "x_min_hz": 55.0,
-    "y_min_hz": 50.0,
+    "x_min_hz": 32.0,
+    "y_min_hz": 28.0,
     "x_max_hz": 1000.0,
     "y_max_hz": 820.0,
 
-    "x_accel_hz_s": 3600.0,
-    "y_accel_hz_s": 3200.0,
-    "x_decel_hz_s": 6500.0,
-    "y_decel_hz_s": 5800.0,
+    "x_accel_hz_s": 7000.0,
+    "y_accel_hz_s": 5600.0,
+    "x_decel_hz_s": 7800.0,
+    "y_decel_hz_s": 6800.0,
 
     # px/s -> Hz
-    "x_ff": 0.28,
-    "y_ff": 0.20,
-    "x_ff_limit_hz": 300.0,
-    "y_ff_limit_hz": 210.0,
+    "x_ff": 0.85,
+    "y_ff": 0.68,
+    "x_ff_limit_hz": 800.0,
+    "y_ff_limit_hz": 700.0,
     "speed_scale": 1.00,
 
     # 自适应速度上限：远处允许快，接近中心自动限速，防止高速穿越中心。
     "near_error_px": 18.0,
     "mid_error_px": 55.0,
     "far_error_px": 140.0,
-    "x_near_cap_hz": 190.0,
-    "y_near_cap_hz": 150.0,
-    "x_mid_cap_hz": 540.0,
-    "y_mid_cap_hz": 410.0,
-    "x_far_cap_hz": 800.0,
-    "y_far_cap_hz": 650.0,
+    "x_near_cap_hz": 260.0,
+    "y_near_cap_hz": 220.0,
+    "x_mid_cap_hz": 900.0,
+    "y_mid_cap_hz": 760.0,
+    "x_far_cap_hz": 900.0,
+    "y_far_cap_hz": 700.0,
 
     # 目标已经向中心高速接近时，按预计到达时间提前制动。
-    "approach_brake_time_s": 0.16,
-    "approach_predict_s": 0.070,
+    "approach_brake_time_s": 0.135,
+    "approach_predict_s": 0.055,
     "approach_min_scale": 0.18,
     "approach_max_error_px": 68.0,
     "error_floor_start_px": 24.0,
@@ -329,16 +336,16 @@ MOTION_CFG = {
     # 短时漏检使用 Kalman 预测位置重新计算控制。
     # 普通/向中心运动：保守减速，避免穿越中心后继续冲。
     "coast_enable": True,
-    "coast_scale_1": 0.72,
-    "coast_scale_2": 0.38,
-    "coast_scale_3": 0.15,
+    "coast_scale_1": 0.82,
+    "coast_scale_2": 0.52,
+    "coast_scale_3": 0.24,
     "coast_scale_4": 0.08,
     "coast_scale_5": 0.00,
     "coast_scale_6": 0.00,
     "coast_ff_scale": 0.35,
     "coast_predict_stop_s": 0.080,
-    "x_coast_max_hz": 190.0,
-    "y_coast_max_hz": 170.0,
+    "x_coast_max_hz": 260.0,
+    "y_coast_max_hz": 210.0,
 
     # 目标远离中心且即将离开画面时：
     # 前几帧保持足够速度追向目标，随后逐级衰减，防止长时间盲走。
@@ -363,23 +370,6 @@ MOTION_CFG = {
     "coast_reference_gain": 1.18,
     "coast_reference_margin_hz": 45.0,
     "coast_edge_reference_margin_hz": 120.0,
-}
-
-
-
-# ============================================================
-# 激光点闭环配置
-# ============================================================
-LASER_CFG = {
-    "enable": True,
-    # 红色激光 HSV 阈值，可通过实际激光颜色调整
-    "r_min": 150,
-    "g_max": 120,
-    "b_max": 120,
-    "min_area": 2,
-    "max_area": 500,
-    # 激光点滤波
-    "smooth": 0.35,
 }
 
 # ============================================================
@@ -1496,6 +1486,17 @@ class RectangleTracker:
             elif quality < RECT_CFG["quality_high"]:
                 continue
 
+            # v4.7：锁定后拒绝同时缺少黑白对比、内外框结构且质量一般的候选。
+            # 高质量候选仍可通过，避免目标倾斜时因内框暂时检测不到而丢失。
+            if self.ever_locked and not reacquire:
+                structural_ok = (
+                    c.get("ring_score", 0.0) >= 0.10
+                    or c.get("contrast", 0.0) >= 7.0
+                    or quality >= 0.52
+                )
+                if not structural_ok:
+                    continue
+
             cx, cy = c["center"]
             dist = math.sqrt((cx - px) ** 2 + (cy - py) ** 2)
             if dist > gate_px:
@@ -1706,9 +1707,10 @@ class RectangleTracker:
             TRACK_CFG["max_lead_y_px"],
         )
         self.filtered_center = (x, y)
+        # v4.5保留亚像素中心；绘制和串口显示时再按需要取整。
         return (
-            int(round(clamp(x, 0, CAMERA_WIDTH - 1))),
-            int(round(clamp(y, 0, CAMERA_HEIGHT - 1))),
+            float(clamp(x, 0.0, CAMERA_WIDTH - 1.0)),
+            float(clamp(y, 0.0, CAMERA_HEIGHT - 1.0)),
         )
 
     def step(self, img, img_np, dt):
@@ -1912,62 +1914,6 @@ class RectangleTracker:
             "corner_refine_fail_count": self.corner_refine_fail_count,
         }
 
-
-
-# ============================================================
-# 激光点检测
-# ============================================================
-def detect_laser_point(img_np):
-    """
-    检测激光光斑中心。
-    返回640x480逻辑坐标。
-    """
-    if not LASER_CFG["enable"]:
-        return None
-
-    try:
-        h = int(img_np.shape[0])
-        w = int(img_np.shape[1])
-
-        points = []
-
-        # RGB888逐点寻找红色高亮区域
-        for y in range(h):
-            for x in range(w):
-                r = int(img_np[y, x, 0])
-                g = int(img_np[y, x, 1])
-                b = int(img_np[y, x, 2])
-
-                if (
-                    r > LASER_CFG["r_min"]
-                    and g < LASER_CFG["g_max"]
-                    and b < LASER_CFG["b_max"]
-                ):
-                    points.append((x, y))
-
-        if len(points) < LASER_CFG["min_area"]:
-            return None
-
-        if len(points) > LASER_CFG["max_area"]:
-            return None
-
-        sx = 0
-        sy = 0
-        for p in points:
-            sx += p[0]
-            sy += p[1]
-
-        cx = sx / len(points)
-        cy = sy / len(points)
-
-        return (
-            detect_to_logical_x(cx),
-            detect_to_logical_y(cy)
-        )
-
-    except Exception:
-        return None
-
 # ============================================================
 # 10. UART3 在线调参
 # ============================================================
@@ -2021,14 +1967,14 @@ class UARTLink:
         self.send("[plot-clear]")
         lines = (
             "K230 D36A tracker v3.4 anti-interference",
-            "CH1 laser_to_rect_x CH2 laser_to_rect_y CH3 x_target_hz CH4 y_target_hz",
+            "CH1 err_x CH2 err_y CH3 x_target_hz CH4 y_target_hz",
             "CH5 x_output_hz CH6 y_output_hz CH7 target_x CH8 target_y",
             "CH9 state:0 lost 1 acquire 2 track 3 coast 4 stop; CH10 fps",
             "PID: xKp xKi xKd yKp yKi yKd xDead yDead",
             "Motion: xMinHz yMinHz xMaxHz yMaxHz xAccel yAccel xDecel yDecel",
             "Limits: xLimitSteps yLimitSteps xLimitDeg yLimitDeg; [motor,get_limit]",
             "Wide test defaults: X ±360deg, Y ±160deg; STAT limit=(x,y) shows soft-limit hit",
-            "Final v3.6 tuning: stronger X dynamic tracking; vision thresholds kept strict",
+            "Final v4.7 tuning: stronger X dynamic tracking; vision thresholds kept strict",
             "Adaptive: xNearCap yNearCap xMidCap yMidCap xFarCap yFarCap",
             "Brake: brakeTime predictStop approachMaxErr errorFloor xCoastMax yCoastMax",
             "Coast: coast1 coast2 coast3 coast4 coast5 coast6 coastPredict",
@@ -2090,41 +2036,718 @@ class UARTLink:
 # ============================================================
 # 11. 主控制器
 # ============================================================
-class K230RectangleStepperTrackerV31:
+
+# ============================================================
+# 17. v4.0：D36A步进云台 + 矩形中心/激光点闭环整合
+# ============================================================
+# 关键原则：
+# 1) 执行器继续使用 D36A STEP/DIR，绝不使用 50Hz 舵机角度 PWM；
+# 2) 矩形检测、Kalman、候选关联完全继承上面的 v4.7 稳定版本；
+# 3) 新控制误差 = 矩形中心 - 激光点中心；
+# 4) 摄像头、矩形、激光任一未就绪时，STEP PWM 占空比保持 0；
+# 5) GPIO35 只控制激光 TTL/EN，D36A EN1/EN2 仍固定接驱动板 5V。
+
+LASER_IO_PIN = 35
+LASER_ACTIVE_LEVEL = 1
+LASER_AUTO_ON_AFTER_CAMERA = True
+LASER_PACKET_INTERVAL_MS = 100
+
+# 激光闭环方向与“摄像头中心追矩形”方向不是同一物理映射。
+# 某轴越追越远时，只翻转对应一项，或串口发送：
+# [slider,laserXReverse,1] / [slider,laserYReverse,1]
+LASER_X_REVERSE = False
+LASER_Y_REVERSE = False
+
+# 矩形与激光连续稳定多少帧后，才允许 STEP 输出。
+LASER_CONTROL_ARM_FRAMES = 1
+# 丢失任一测量立即停步进，不做盲目回中。
+LASER_COAST_ENABLE = True
+# v4.4：修复COAST控制被状态判断再次拦截的问题，并允许短时连续控制。
+LASER_PREDICT_MAX_FRAMES = 2
+LASER_PREDICT_VEL_DECAY = 0.68
+LASER_COAST_CMD_SCALE_1 = 0.72
+LASER_COAST_CMD_SCALE_2 = 0.42
+RECT_COAST_CMD_SCALE_1 = 0.72
+CONTROL_ERROR_ALPHA = 0.82
+CONTROL_REL_VEL_ALPHA = 0.20
+RECT_COAST_CMD_SCALE_2 = 0.42
+RECT_COAST_MAX_FRAMES = 2
+INVALID_HARD_RESET_FRAMES = 2
+
+# v4.5 精定位参数。坐标单位均为640x480逻辑像素。
+# 进入停止区后，必须超过退出阈值才重新运动，避免中心附近反复启停。
+PRECISION_CFG = {
+    "x_stop_enter_px": 2.5,
+    "x_stop_exit_px": 5.0,
+    "y_stop_enter_px": 3.0,
+    "y_stop_exit_px": 5.5,
+
+    "precision_error_px": 16.0,
+    "mid_error_px": 52.0,
+
+    # 小误差区降低P、前馈和速度上限；大误差区保留追踪速度。
+    "near_kp_scale": 0.78,
+    "near_kd_scale": 0.62,
+    "near_ff_scale": 0.05,
+    "mid_kp_scale": 1.00,
+    "mid_kd_scale": 1.00,
+    "mid_ff_scale": 0.68,
+    "far_kp_scale": 1.08,
+    "far_kd_scale": 0.90,
+    "far_ff_scale": 1.00,
+
+    "x_precision_cap_hz": 120.0,
+    "y_precision_cap_hz": 92.0,
+    "x_mid_cap_hz": 900.0,
+    "y_mid_cap_hz": 760.0,
+}
+
+# v4.7：视觉边界保护和软限位自动重基准。
+# 软件步数没有编码器反馈，长期积分会误触发限位；稳定对准后重新以当前位置为0。
+AUTO_REBASE_ENABLE = True
+AUTO_REBASE_ERR_X_PX = 4.0
+AUTO_REBASE_ERR_Y_PX = 4.0
+AUTO_REBASE_STABLE_FRAMES = 24
+LASER_EDGE_GUARD_X_PX = 24.0
+LASER_EDGE_GUARD_Y_PX = 20.0
+LASER_PREDICT_X_CAP_HZ = 190.0
+LASER_PREDICT_Y_CAP_HZ = 155.0
+
+# 连续发散保护：目标矩形基本静止、已经输出步进命令，误差却持续增大时停机。
+DIVERGENCE_GUARD_ENABLE = True
+DIVERGENCE_GROW_PX = 4.0
+DIVERGENCE_GROW_RATIO = 1.06
+DIVERGENCE_LIMIT_FRAMES = 4
+DIVERGENCE_RECT_SPEED_MAX = 80.0
+
+LASER_CFG = {
+    # 两级LAB阈值：
+    # 1) 未锁定时只允许“严格红色核心”参与捕获，避免黑白矩形边缘和彩色噪声被当成激光；
+    # 2) 已锁定后如果严格核心暂时消失，才允许在预测位置附近使用较宽的红色光晕阈值续跟。
+    "core_l_min": 18,
+    "core_l_max": 88,
+    "core_a_min": 30,
+    "core_a_max": 127,
+    "core_b_min": 5,
+    "core_b_max": 127,
+
+    "halo_l_min": 12,
+    "halo_l_max": 100,
+    "halo_a_min": 16,
+    "halo_a_max": 127,
+    "halo_b_min": -8,
+    "halo_b_max": 127,
+
+    # 320x240检测尺度下的几何筛选。
+    # 激光点应当小、紧凑；大色块、细长边缘和稀疏噪声直接剔除。
+    "pixels_min": 2,
+    "area_min": 2,
+    "area_max": 220,
+    "target_area": 10.0,
+    "max_w_det": 24.0,
+    "max_h_det": 24.0,
+    "max_aspect": 3.2,
+    "min_density": 0.12,
+    "merge_margin": 0,
+
+    # 时序门控。锁定后的门限必须明显小于旧版42px，防止从一个红噪声跳到另一个。
+    "gate_locked_px_det": 60.0,
+    "gate_reacquire_px_det": 120.0,
+    "acquire_jump_px_det": 20.0,
+    "max_lost_frames": 18,
+    "acquire_frames": 3,
+
+    # 未锁定时的歧义保护：候选过多或第一、第二名过于接近时不允许闭环启动。
+    "max_acquire_candidates": 6,
+    "min_acquire_score": 0.46,
+    "min_locked_score": 0.28,
+    "ambiguity_margin": 0.08,
+
+    "position_alpha": 0.92,
+    "velocity_alpha": 0.50,
+    "velocity_limit_logical": 1000.0,
+
+    # RGB565局部红色加权质心，用于替代整数blob中心。
+    "subpixel_radius": 5,
+    "subpixel_red_floor": 70,
+    "subpixel_red_excess": 12,
+    "subpixel_max_shift_det": 4.0,
+
+    # 丢锁后保留最后可靠位置作为重捕获锚点，电机已停时真实光点不应远跳。
+    "anchor_keep_frames": 45,
+    "anchor_gate_det": 30.0,
+    "dynamic_gate_max_det": 28.0,
+    "halo_gate_scale": 0.78,
+    "locked_area_ratio_max": 5.0,
+
+    # 优先只在目标矩形及其附近寻找激光，避免全画面红色干扰。
+    # 连续找不到时才周期性回退到全画面严格核心搜索。
+    "full_scan_when_unlocked": False,
+    "rect_roi_margin_det": 42.0,
+    "roi_margin_det": 20.0,
+    "full_scan_fallback_frames": 30,
+}
+
+
+class LaserTTL35:
+    """GPIO35只输出逻辑电平，不为激光模块供电。"""
+
+    def __init__(self, pin_no=LASER_IO_PIN, active_level=LASER_ACTIVE_LEVEL):
+        self.pin_no = int(pin_no)
+        self.active_level = 1 if active_level else 0
+        self.pin = make_gpio_output(self.pin_no, 1 - self.active_level)
+        self.enabled = False
+        self.off()
+        print("Laser TTL GPIO%d ready active=%d default=OFF" % (
+            self.pin_no, self.active_level
+        ))
+
+    def set(self, enabled):
+        self.enabled = bool(enabled)
+        level = self.active_level if self.enabled else (1 - self.active_level)
+        write_pin(self.pin, level)
+        return self.enabled
+
+    def on(self):
+        return self.set(True)
+
+    def off(self):
+        return self.set(False)
+
+    def set_active_level(self, level):
+        """在线切换高/低电平有效。切换后保持原来的开关命令状态。"""
+        was_enabled = bool(self.enabled)
+        self.active_level = 1 if float(level) >= 0.5 else 0
+        self.set(was_enabled)
+        print("Laser TTL active level changed to %d; commanded_on=%d" % (
+            self.active_level, 1 if self.enabled else 0
+        ))
+        return self.active_level
+
+    def deinit(self):
+        try:
+            self.off()
+        except Exception:
+            pass
+        try:
+            self.pin.deinit()
+        except Exception:
+            pass
+
+
+class LaserSpotTracker320:
+    """在320x240 RGB565图像上识别红色激光，输出640x480逻辑坐标。
+
+    v4.2关键策略：
+    - 未锁定：只使用严格CORE阈值，且要求连续位置一致；
+    - 已锁定：CORE优先，CORE缺失时只在预测位置附近使用HALO阈值；
+    - 候选过多或最优候选不突出时判为歧义，不给电机控制；
+    - 任何单帧漏检都立即返回None，使STEP输出归零，不使用陈旧光点盲走。
+    """
+
+    def __init__(self):
+        self.position_det = None
+        self.position = None
+        self.provisional_det = None
+        self.velocity_det = (0.0, 0.0)
+        self.velocity = (0.0, 0.0)
+        self.locked = False
+        self.acquire_count = 0
+        self.lost_frames = 0
+        self.confidence = 0.0
+        self.candidate_count = 0
+        self.raw_blob_count = 0
+        self.core_blob_count = 0
+        self.halo_blob_count = 0
+        self.ambiguous = 0
+        self.reject_area = 0
+        self.reject_shape = 0
+        self.reject_density = 0
+        self.reject_gate = 0
+        self.last_area = 0.0
+        self.last_density = 0.0
+        self.last_roi = (0, 0, DETECT_WIDTH, DETECT_HEIGHT)
+        self.find_error_count = 0
+        self.last_find_error = ""
+        self.frame_index = 0
+        self.last_candidates_det = []
+        self.last_source = "NONE"
+        self.last_reliable_det = None
+        self.anchor_age = 9999
+
+    def reset(self):
+        self.position_det = None
+        self.position = None
+        self.provisional_det = None
+        self.velocity_det = (0.0, 0.0)
+        self.velocity = (0.0, 0.0)
+        self.locked = False
+        self.acquire_count = 0
+        self.lost_frames = 0
+        self.confidence = 0.0
+        self.candidate_count = 0
+        self.raw_blob_count = 0
+        self.core_blob_count = 0
+        self.halo_blob_count = 0
+        self.ambiguous = 0
+        self.reject_area = 0
+        self.reject_shape = 0
+        self.reject_density = 0
+        self.reject_gate = 0
+        self.last_area = 0.0
+        self.last_density = 0.0
+        self.last_candidates_det = []
+        self.last_source = "NONE"
+        self.last_reliable_det = None
+        self.anchor_age = 9999
+
+    @staticmethod
+    def _blob_value(blob, method_name, tuple_index, default=0):
+        try:
+            return getattr(blob, method_name)()
+        except Exception:
+            try:
+                return blob[tuple_index]
+            except Exception:
+                return default
+
+    @staticmethod
+    def _clip_roi(x0, y0, x1, y1):
+        x0 = int(clamp(math.floor(x0), 0, DETECT_WIDTH - 1))
+        y0 = int(clamp(math.floor(y0), 0, DETECT_HEIGHT - 1))
+        x1 = int(clamp(math.ceil(x1), x0 + 1, DETECT_WIDTH))
+        y1 = int(clamp(math.ceil(y1), y0 + 1, DETECT_HEIGHT))
+        return x0, y0, x1 - x0, y1 - y0
+
+    @staticmethod
+    def core_threshold():
+        return (
+            int(LASER_CFG["core_l_min"]), int(LASER_CFG["core_l_max"]),
+            int(LASER_CFG["core_a_min"]), int(LASER_CFG["core_a_max"]),
+            int(LASER_CFG["core_b_min"]), int(LASER_CFG["core_b_max"]),
+        )
+
+    @staticmethod
+    def halo_threshold():
+        return (
+            int(LASER_CFG["halo_l_min"]), int(LASER_CFG["halo_l_max"]),
+            int(LASER_CFG["halo_a_min"]), int(LASER_CFG["halo_a_max"]),
+            int(LASER_CFG["halo_b_min"]), int(LASER_CFG["halo_b_max"]),
+        )
+
+    def _build_roi(self, rect_box_det):
+        # 已锁定时只在激光预测位置附近搜索，矩形误检不能把搜索窗口拉到远处红点。
+        if self.locked and self.position_det is not None:
+            speed = math.sqrt(self.velocity_det[0] ** 2 + self.velocity_det[1] ** 2)
+            g = clamp(
+                float(LASER_CFG["gate_locked_px_det"]) + speed * 0.05 + 5.0,
+                20.0, float(LASER_CFG["dynamic_gate_max_det"]),
+            )
+            px = self.position_det[0]
+            py = self.position_det[1]
+            return self._clip_roi(px - g, py - g, px + g, py + g)
+
+        boxes = []
+        anchor = self.provisional_det
+        if anchor is None and self.anchor_age <= int(LASER_CFG["anchor_keep_frames"]):
+            anchor = self.last_reliable_det
+        if anchor is not None:
+            g = float(LASER_CFG["anchor_gate_det"])
+            boxes.append((anchor[0] - g, anchor[1] - g, anchor[0] + g, anchor[1] + g))
+
+        if rect_box_det is not None:
+            x, y, w, h = rect_box_det
+            m = float(LASER_CFG["rect_roi_margin_det"])
+            boxes.append((x - m, y - m, x + w + m, y + h + m))
+
+        fallback = self.anchor_age > int(LASER_CFG["full_scan_fallback_frames"])
+        if LASER_CFG["full_scan_when_unlocked"] or fallback or not boxes:
+            return 0, 0, DETECT_WIDTH, DETECT_HEIGHT
+
+        return self._clip_roi(
+            min(v[0] for v in boxes), min(v[1] for v in boxes),
+            max(v[2] for v in boxes), max(v[3] for v in boxes),
+        )
+
+    def _find(self, img, threshold, roi):
+        try:
+            return img.find_blobs(
+                [threshold], roi=roi, x_stride=1, y_stride=1,
+                pixels_threshold=int(LASER_CFG["pixels_min"]),
+                area_threshold=int(LASER_CFG["area_min"]),
+                merge=True, margin=int(LASER_CFG["merge_margin"]),
+            ) or []
+        except TypeError:
+            return img.find_blobs(
+                [threshold], roi=roi,
+                pixels_threshold=int(LASER_CFG["pixels_min"]),
+                area_threshold=int(LASER_CFG["area_min"]),
+                merge=True, margin=int(LASER_CFG["merge_margin"]),
+            ) or []
+
+    def _subpixel_centroid_rgb565(self, img_np, cx, cy, bw, bh):
+        """在blob附近计算红色加权质心；失败时退回find_blobs中心。"""
+        if img_np is None:
+            return float(cx), float(cy)
+        radius = int(clamp(
+            max(float(LASER_CFG["subpixel_radius"]), 0.65 * max(bw, bh) + 2.0),
+            3.0, 10.0,
+        ))
+        x0 = max(0, int(math.floor(cx)) - radius)
+        x1 = min(DETECT_WIDTH - 1, int(math.ceil(cx)) + radius)
+        y0 = max(0, int(math.floor(cy)) - radius)
+        y1 = min(DETECT_HEIGHT - 1, int(math.ceil(cy)) + radius)
+        sw = 0.0
+        sx = 0.0
+        sy = 0.0
+        red_floor = float(LASER_CFG["subpixel_red_floor"])
+        excess_floor = float(LASER_CFG["subpixel_red_excess"])
+        try:
+            for yy in range(y0, y1 + 1):
+                for xx in range(x0, x1 + 1):
+                    value = int(img_np[yy, xx, 0]) | (int(img_np[yy, xx, 1]) << 8)
+                    rv = ((value >> 11) & 0x1F) * (255.0 / 31.0)
+                    gv = ((value >> 5) & 0x3F) * (255.0 / 63.0)
+                    bv = (value & 0x1F) * (255.0 / 31.0)
+                    excess = rv - max(gv, bv)
+                    if rv < red_floor or excess < excess_floor:
+                        continue
+                    weight = excess + 0.20 * max(0.0, rv - red_floor)
+                    sw += weight
+                    sx += weight * xx
+                    sy += weight * yy
+            if sw > 1e-6:
+                rx = sx / sw
+                ry = sy / sw
+                shift = math.sqrt((rx - float(cx)) ** 2 + (ry - float(cy)) ** 2)
+                if shift <= float(LASER_CFG["subpixel_max_shift_det"]):
+                    return rx, ry
+        except Exception:
+            pass
+        return float(cx), float(cy)
+
+    def _candidate_from_blob(self, blob, source, reference, gate, img_np=None):
+        bx = float(self._blob_value(blob, "cx", 5, 0))
+        by = float(self._blob_value(blob, "cy", 6, 0))
+        bw = float(self._blob_value(blob, "w", 2, 0))
+        bh = float(self._blob_value(blob, "h", 3, 0))
+        pixels = float(self._blob_value(blob, "pixels", 4, bw * bh))
+        area = max(1.0, bw * bh)
+
+        if area < LASER_CFG["area_min"] or area > LASER_CFG["area_max"]:
+            self.reject_area += 1
+            return None
+        if bw <= 0.0 or bh <= 0.0 or bw > LASER_CFG["max_w_det"] or bh > LASER_CFG["max_h_det"]:
+            self.reject_shape += 1
+            return None
+        aspect = max(bw, bh) / max(1.0, min(bw, bh))
+        if aspect > LASER_CFG["max_aspect"]:
+            self.reject_shape += 1
+            return None
+
+        density = clamp(pixels / area, 0.0, 1.0)
+        if density < LASER_CFG["min_density"]:
+            self.reject_density += 1
+            return None
+
+        if self.locked and self.last_area > 0.0:
+            area_ratio = max(area, self.last_area) / max(1.0, min(area, self.last_area))
+            if area_ratio > float(LASER_CFG["locked_area_ratio_max"]):
+                self.reject_area += 1
+                return None
+
+        bx, by = self._subpixel_centroid_rgb565(img_np, bx, by, bw, bh)
+
+        dist = 0.0
+        if reference is not None:
+            dist = math.sqrt((bx - reference[0]) ** 2 + (by - reference[1]) ** 2)
+            if dist > gate:
+                self.reject_gate += 1
+                return None
+
+        proximity = 1.0 if reference is None else clamp(1.0 - dist / max(1.0, gate), 0.0, 1.0)
+        area_score = clamp(
+            1.0 - abs(area - LASER_CFG["target_area"])
+            / max(4.0, LASER_CFG["target_area"] * 2.0),
+            0.0, 1.0,
+        )
+        shape_score = clamp(1.0 - (aspect - 1.0) / max(0.1, LASER_CFG["max_aspect"] - 1.0), 0.0, 1.0)
+        source_bonus = 0.14 if source == "CORE" else 0.0
+
+        if self.locked:
+            score = 0.58 * proximity + 0.14 * area_score + 0.16 * density + 0.12 * shape_score + source_bonus
+        elif reference is not None:
+            score = 0.38 * proximity + 0.20 * area_score + 0.24 * density + 0.18 * shape_score + source_bonus
+        else:
+            score = 0.30 * area_score + 0.40 * density + 0.30 * shape_score + source_bonus
+
+        return (score, (bx, by), area, density, source, dist)
+
+    def _handle_no_measurement(self, dt=0.0):
+        self.lost_frames += 1
+        self.anchor_age += 1
+        self.confidence = 0.0
+        self.last_source = "NONE"
+
+        if (
+            self.locked
+            and self.position_det is not None
+            and self.lost_frames <= int(LASER_PREDICT_MAX_FRAMES)
+        ):
+            decay = float(LASER_PREDICT_VEL_DECAY)
+            self.velocity_det = (
+                self.velocity_det[0] * decay,
+                self.velocity_det[1] * decay,
+            )
+            self.position_det = (
+                clamp(self.position_det[0] + self.velocity_det[0] * max(0.0, dt),
+                      0.0, DETECT_WIDTH - 1.0),
+                clamp(self.position_det[1] + self.velocity_det[1] * max(0.0, dt),
+                      0.0, DETECT_HEIGHT - 1.0),
+            )
+            self.position = (
+                detect_to_logical_x(self.position_det[0]),
+                detect_to_logical_y(self.position_det[1]),
+            )
+            self.velocity = (
+                self.velocity_det[0] * DETECT_TO_LOGICAL_X,
+                self.velocity_det[1] * DETECT_TO_LOGICAL_Y,
+            )
+            self.last_source = "PREDICT"
+            return self.position
+
+        if self.locked and self.lost_frames > int(LASER_CFG["max_lost_frames"]):
+            # 不清除最后可靠锚点。电机已停止，真实激光应仍在附近。
+            if self.position_det is not None:
+                self.last_reliable_det = self.position_det
+                self.anchor_age = 0
+            self.locked = False
+            self.position_det = None
+            self.position = None
+            self.provisional_det = None
+            self.acquire_count = 0
+            self.velocity_det = (0.0, 0.0)
+            self.velocity = (0.0, 0.0)
+        return None
+
+    def detect(self, img, img_np, rect_box_det, desired_center_logical, dt):
+        self.frame_index += 1
+        self.ambiguous = 0
+        self.reject_area = 0
+        self.reject_shape = 0
+        self.reject_density = 0
+        self.reject_gate = 0
+
+        roi = self._build_roi(rect_box_det)
+        self.last_roi = roi
+        try:
+            core_blobs = self._find(img, self.core_threshold(), roi)
+            self.last_find_error = ""
+        except Exception as e:
+            core_blobs = []
+            self.find_error_count += 1
+            self.last_find_error = str(e)
+
+        # v4.7：锁定或刚丢锁时始终在预测/锚点附近补做HALO搜索。
+        # 即使画面别处存在CORE噪声，也不会阻止真实激光用HALO续跟。
+        halo_blobs = []
+        halo_ref = self.position_det
+        if halo_ref is None and self.anchor_age <= int(LASER_CFG["anchor_keep_frames"]):
+            halo_ref = self.last_reliable_det
+        if halo_ref is not None:
+            base_g = float(LASER_CFG["gate_locked_px_det"])
+            g = clamp(base_g * 1.20, 18.0, float(LASER_CFG["dynamic_gate_max_det"]))
+            hx, hy = halo_ref
+            halo_roi = self._clip_roi(hx - g, hy - g, hx + g, hy + g)
+            try:
+                halo_blobs = self._find(img, self.halo_threshold(), halo_roi)
+            except Exception as e:
+                self.find_error_count += 1
+                self.last_find_error = str(e)
+
+        self.core_blob_count = len(core_blobs)
+        self.halo_blob_count = len(halo_blobs)
+        self.raw_blob_count = self.core_blob_count + self.halo_blob_count
+
+        if self.last_find_error and (self.find_error_count <= 3 or self.frame_index % 60 == 0):
+            print("laser find_blobs error on RGB565 channel:", self.last_find_error)
+
+        predicted_det = None
+        if self.position_det is not None:
+            predicted_det = (
+                self.position_det[0] + self.velocity_det[0] * dt,
+                self.position_det[1] + self.velocity_det[1] * dt,
+            )
+
+        # 未锁定时优先使用临时位置，其次使用最后可靠锚点。
+        if self.locked:
+            reference = predicted_det
+            speed = math.sqrt(self.velocity_det[0] ** 2 + self.velocity_det[1] ** 2)
+            gate = clamp(
+                float(LASER_CFG["gate_locked_px_det"]) + speed * dt * 1.2,
+                float(LASER_CFG["gate_locked_px_det"]),
+                float(LASER_CFG["dynamic_gate_max_det"]),
+            )
+        else:
+            reference = self.provisional_det
+            if reference is None and self.anchor_age <= int(LASER_CFG["anchor_keep_frames"]):
+                reference = self.last_reliable_det
+            gate = float(LASER_CFG["anchor_gate_det"] if reference is not None else LASER_CFG["gate_reacquire_px_det"])
+
+        candidates = []
+        for blob in core_blobs:
+            c = self._candidate_from_blob(blob, "CORE", reference, gate, img_np)
+            if c is not None:
+                candidates.append(c)
+        for blob in halo_blobs:
+            halo_gate = gate * float(LASER_CFG["halo_gate_scale"])
+            c = self._candidate_from_blob(blob, "HALO", reference, halo_gate, img_np)
+            if c is not None:
+                candidates.append(c)
+
+        # CORE与HALO可能描述同一光斑，按3像素邻域去重，优先保留得分更高者。
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        dedup = []
+        for item in candidates:
+            px, py = item[1]
+            duplicate = False
+            for kept in dedup:
+                kx, ky = kept[1]
+                if (px - kx) ** 2 + (py - ky) ** 2 <= 9.0:
+                    duplicate = True
+                    break
+            if not duplicate:
+                dedup.append(item)
+        candidates = dedup
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        self.candidate_count = len(candidates)
+        self.last_candidates_det = [
+            (float(item[1][0]), float(item[1][1]), float(item[2]), float(item[3]))
+            for item in candidates
+        ]
+
+        if not candidates:
+            self.acquire_count = 0 if not self.locked else self.acquire_count
+            return self._handle_no_measurement(dt)
+
+        # 未锁定时，候选过多且最优者不明显，判为歧义，不启动电机。
+        if not self.locked:
+            top_score = float(candidates[0][0])
+            second_score = float(candidates[1][0]) if len(candidates) > 1 else -1.0
+            too_many = len(candidates) > int(LASER_CFG["max_acquire_candidates"])
+            too_close = len(candidates) > 1 and (top_score - second_score) < float(LASER_CFG["ambiguity_margin"])
+            if top_score < float(LASER_CFG["min_acquire_score"]) or (too_many and too_close):
+                self.ambiguous = 1
+                self.acquire_count = 0
+                self.provisional_det = None
+                return self._handle_no_measurement(dt)
+        elif candidates[0][0] < float(LASER_CFG["min_locked_score"]):
+            return self._handle_no_measurement(dt)
+
+        score, measured_det, area, density, source, _ = candidates[0]
+        self.last_area = area
+        self.last_density = density
+        self.confidence = clamp(score, 0.0, 1.0)
+        self.last_source = source
+        self.lost_frames = 0
+        self.anchor_age = 0
+
+        # 首次捕获必须连续3帧落在同一小区域，不能每帧换一个红噪声仍累计锁定。
+        if not self.locked:
+            if self.provisional_det is None:
+                self.provisional_det = measured_det
+                self.acquire_count = 1
+                return None
+
+            jump = math.sqrt(
+                (measured_det[0] - self.provisional_det[0]) ** 2
+                + (measured_det[1] - self.provisional_det[1]) ** 2
+            )
+            if jump > float(LASER_CFG["acquire_jump_px_det"]):
+                self.provisional_det = measured_det
+                self.acquire_count = 1
+                return None
+
+            pa = 0.55
+            self.provisional_det = (
+                self.provisional_det[0] + pa * (measured_det[0] - self.provisional_det[0]),
+                self.provisional_det[1] + pa * (measured_det[1] - self.provisional_det[1]),
+            )
+            self.acquire_count += 1
+            if self.acquire_count < int(LASER_CFG["acquire_frames"]):
+                return None
+
+            self.locked = True
+            self.position_det = self.provisional_det
+            self.position = (
+                detect_to_logical_x(self.position_det[0]),
+                detect_to_logical_y(self.position_det[1]),
+            )
+            self.velocity_det = (0.0, 0.0)
+            self.velocity = (0.0, 0.0)
+            self.last_reliable_det = self.position_det
+            self.anchor_age = 0
+            return self.position
+
+        # 已锁定：位置与速度滤波。
+        if self.position_det is None:
+            filtered_det = measured_det
+            new_velocity_det = (0.0, 0.0)
+        else:
+            a = float(LASER_CFG["position_alpha"])
+            filtered_det = (
+                self.position_det[0] + a * (measured_det[0] - self.position_det[0]),
+                self.position_det[1] + a * (measured_det[1] - self.position_det[1]),
+            )
+            raw_vx = (filtered_det[0] - self.position_det[0]) / max(0.004, dt)
+            raw_vy = (filtered_det[1] - self.position_det[1]) / max(0.004, dt)
+            va = float(LASER_CFG["velocity_alpha"])
+            new_velocity_det = (
+                self.velocity_det[0] + va * (raw_vx - self.velocity_det[0]),
+                self.velocity_det[1] + va * (raw_vy - self.velocity_det[1]),
+            )
+
+        logical_limit = float(LASER_CFG["velocity_limit_logical"])
+        new_velocity_logical = (
+            clamp(new_velocity_det[0] * DETECT_TO_LOGICAL_X, -logical_limit, logical_limit),
+            clamp(new_velocity_det[1] * DETECT_TO_LOGICAL_Y, -logical_limit, logical_limit),
+        )
+        self.velocity_det = (
+            new_velocity_logical[0] / DETECT_TO_LOGICAL_X,
+            new_velocity_logical[1] / DETECT_TO_LOGICAL_Y,
+        )
+        self.velocity = new_velocity_logical
+        self.position_det = filtered_det
+        self.provisional_det = filtered_det
+        self.last_reliable_det = filtered_det
+        self.anchor_age = 0
+        self.position = (
+            detect_to_logical_x(filtered_det[0]),
+            detect_to_logical_y(filtered_det[1]),
+        )
+        return self.position
+
+# ============================================================
+# 单控制器优化版
+# ============================================================
+class K230D36ALaserRectTrackerV5:
+    """v5 optimized: 单控制器激光点对准矩形中心版本。
+
+由 v4.7 功能等价扁平化生成：保留矩形检测、激光检测、PID、STEP/DIR、UART、
+状态机、软限位、诊断和异常清理，删除完整基础应用控制器与激光子类之间的重复实现。"""
+
     def __init__(self):
         self.cx0 = CAMERA_WIDTH // 2
         self.cy0 = CAMERA_HEIGHT // 2
-
         self.common_enable = CommonEnable()
-        self.x_axis = StepperAxis(
-            "X", X_STEP_PIN, X_DIR_PIN, X_POSITIVE_DIR_LEVEL, X_REVERSE,
-            MOTION_CFG["x_min_hz"], MOTION_CFG["x_max_hz"],
-            MOTION_CFG["x_accel_hz_s"], MOTION_CFG["x_decel_hz_s"],
-            X_SOFT_LIMIT_STEPS,
-        )
-        self.y_axis = StepperAxis(
-            "Y", Y_STEP_PIN, Y_DIR_PIN, Y_POSITIVE_DIR_LEVEL, Y_REVERSE,
-            MOTION_CFG["y_min_hz"], MOTION_CFG["y_max_hz"],
-            MOTION_CFG["y_accel_hz_s"], MOTION_CFG["y_decel_hz_s"],
-            Y_SOFT_LIMIT_STEPS,
-        )
+        self.x_axis = StepperAxis('X', X_STEP_PIN, X_DIR_PIN, X_POSITIVE_DIR_LEVEL, X_REVERSE, MOTION_CFG['x_min_hz'], MOTION_CFG['x_max_hz'], MOTION_CFG['x_accel_hz_s'], MOTION_CFG['x_decel_hz_s'], X_SOFT_LIMIT_STEPS)
+        self.y_axis = StepperAxis('Y', Y_STEP_PIN, Y_DIR_PIN, Y_POSITIVE_DIR_LEVEL, Y_REVERSE, MOTION_CFG['y_min_hz'], MOTION_CFG['y_max_hz'], MOTION_CFG['y_accel_hz_s'], MOTION_CFG['y_decel_hz_s'], Y_SOFT_LIMIT_STEPS)
         self.common_enable.enable()
-        print("D36A EN1/EN2 must be tied to board 5V; GPIO35 unused")
-
-        self.x_pid = VelocityPID(
-            PID_CFG["x_kp"], PID_CFG["x_ki"], PID_CFG["x_kd"],
-            MOTION_CFG["x_max_hz"], PID_CFG["integral_limit"],
-            PID_CFG["derivative_tau_s"],
-        )
-        self.y_pid = VelocityPID(
-            PID_CFG["y_kp"], PID_CFG["y_ki"], PID_CFG["y_kd"],
-            MOTION_CFG["y_max_hz"], PID_CFG["integral_limit"],
-            PID_CFG["derivative_tau_s"],
-        )
-
+        print('D36A EN1/EN2 tied to board 5V; GPIO35 controls laser TTL')
+        self.x_pid = VelocityPID(PID_CFG['x_kp'], PID_CFG['x_ki'], PID_CFG['x_kd'], MOTION_CFG['x_max_hz'], PID_CFG['integral_limit'], PID_CFG['derivative_tau_s'])
+        self.y_pid = VelocityPID(PID_CFG['y_kp'], PID_CFG['y_ki'], PID_CFG['y_kd'], MOTION_CFG['y_max_hz'], PID_CFG['integral_limit'], PID_CFG['derivative_tau_s'])
         self.tracker = RectangleTracker()
         self.uart = UARTLink()
-
         self.tracking_enabled = True
         self.estop = False
         self.last_err_x = None
@@ -2133,7 +2756,6 @@ class K230RectangleStepperTrackerV31:
         self.last_y_target_hz = 0.0
         self.last_track_x_hz = 0.0
         self.last_track_y_hz = 0.0
-
         now = time.ticks_ms()
         self.last_frame_ms = now
         self.last_plot_ms = now
@@ -2146,12 +2768,31 @@ class K230RectangleStepperTrackerV31:
         self.perf_control_ms = 0.0
         self.perf_display_ms = 0.0
         self.perf_total_ms = 0.0
+        self.laser_output = LaserTTL35()
+        self.laser = LaserSpotTracker320()
+        self.current_laser_pos = None
+        self.control_arm_count = 0
+        self.direction_fault = False
+        self.direction_fault_reported = False
+        self.previous_error_norm = None
+        self.divergence_count = 0
+        self.last_laser_packet_ms = time.ticks_ms()
+        self.filtered_err_x = None
+        self.filtered_err_y = None
+        self.filtered_rel_vx = 0.0
+        self.filtered_rel_vy = 0.0
+        self.invalid_control_frames = 0
+        self.x_precision_hold = False
+        self.y_precision_hold = False
+        self.last_x_zone = 0
+        self.last_y_zone = 0
+        self.stable_align_count = 0
 
     @staticmethod
     def crossed_zero(previous, current):
         if previous is None:
             return False
-        return (previous > 0.0 and current < 0.0) or (previous < 0.0 and current > 0.0)
+        return previous > 0.0 and current < 0.0 or (previous < 0.0 and current > 0.0)
 
     def reset_pid_memory(self):
         self.x_pid.reset()
@@ -2178,7 +2819,7 @@ class K230RectangleStepperTrackerV31:
         if zero_virtual:
             self.x_axis.zero_virtual_position()
             self.y_axis.zero_virtual_position()
-        print("stepper stopped; tracker reset; zero_virtual=%s" % zero_virtual)
+        print('stepper stopped; tracker reset; zero_virtual=%s' % zero_virtual)
 
     def emergency_stop(self):
         self.estop = True
@@ -2192,10 +2833,9 @@ class K230RectangleStepperTrackerV31:
 
     def adaptive_axis_cap(self, abs_error, near_cap, mid_cap, far_cap, max_hz):
         """按像素误差平滑计算当前允许的最大 STEP 频率。"""
-        near_e = MOTION_CFG["near_error_px"]
-        mid_e = MOTION_CFG["mid_error_px"]
-        far_e = MOTION_CFG["far_error_px"]
-
+        near_e = MOTION_CFG['near_error_px']
+        mid_e = MOTION_CFG['mid_error_px']
+        far_e = MOTION_CFG['far_error_px']
         if abs_error <= near_e:
             cap = near_cap
         elif abs_error <= mid_e:
@@ -2206,249 +2846,55 @@ class K230RectangleStepperTrackerV31:
             cap = mid_cap + ratio * (far_cap - mid_cap)
         else:
             cap = far_cap
-
         return clamp(cap, 0.0, max_hz)
 
-    def compute_axis_target(self, pid, error_px, velocity_px_s, dt,
-                            deadzone_px, ff_gain, ff_limit_hz,
-                            min_hz, max_hz, previous_error,
-                            near_cap_hz, mid_cap_hz, far_cap_hz):
+    def compute_axis_target(self, pid, error_px, velocity_px_s, dt, deadzone_px, ff_gain, ff_limit_hz, min_hz, max_hz, previous_error, near_cap_hz, mid_cap_hz, far_cap_hz):
         if abs(error_px) <= deadzone_px:
             pid.reset()
-            return 0.0, False
-
+            return (0.0, False)
         crossed = self.crossed_zero(previous_error, error_px)
         if crossed and abs(error_px) < ZERO_CROSS_BRAKE_PX:
             pid.reset()
-            return 0.0, True
-
+            return (0.0, True)
         pid.output_limit = float(max_hz)
         target = pid.update(error_px, dt)
-
         ff = 0.0
         if abs(velocity_px_s) > FAST_VEL_START_PX_S and abs(error_px) > FAST_ERR_START_PX:
             ff = clamp(ff_gain * velocity_px_s, -ff_limit_hz, ff_limit_hz)
             if target * ff < 0.0 and abs(error_px) < 80.0:
-                ff *= 0.30
-        target = (target + ff) * MOTION_CFG["speed_scale"]
+                ff *= 0.3
+        target = (target + ff) * MOTION_CFG['speed_scale']
         target = clamp(target, -max_hz, max_hz)
-
         abs_error = abs(error_px)
-        adaptive_cap = self.adaptive_axis_cap(
-            abs_error, near_cap_hz, mid_cap_hz, far_cap_hz, max_hz
-        )
+        adaptive_cap = self.adaptive_axis_cap(abs_error, near_cap_hz, mid_cap_hz, far_cap_hz, max_hz)
         target = clamp(target, -adaptive_cap, adaptive_cap)
-
-        # 远离中心的误差不能因为PID/前馈抵消或错误速度预测而完全停住。
-        # 这次数据中多次出现 |err|>100px 但 outHz=0，造成动态滞后。
-        if abs_error >= MOTION_CFG["error_floor_start_px"] and abs(target) < min_hz:
+        if abs_error >= MOTION_CFG['error_floor_start_px'] and abs(target) < min_hz:
             target = min_hz if error_px > 0.0 else -min_hz
-
-        # error 与 velocity 异号表示目标正在向画面中心靠近。
-        # 只在接近中心时提前制动；大误差区禁止“预计穿越中心→直接归零”。
-        if (
-            abs_error <= MOTION_CFG["approach_max_error_px"]
-            and error_px * velocity_px_s < 0.0
-            and abs(velocity_px_s) > 1.0
-        ):
-            predicted_error = error_px + velocity_px_s * MOTION_CFG["approach_predict_s"]
+        if abs_error <= MOTION_CFG['approach_max_error_px'] and error_px * velocity_px_s < 0.0 and (abs(velocity_px_s) > 1.0):
+            predicted_error = error_px + velocity_px_s * MOTION_CFG['approach_predict_s']
             if error_px * predicted_error <= 0.0:
                 pid.reset()
-                return 0.0, True
+                return (0.0, True)
             time_to_center = abs(error_px) / max(1.0, abs(velocity_px_s))
-            brake_time = MOTION_CFG["approach_brake_time_s"]
+            brake_time = MOTION_CFG['approach_brake_time_s']
             if time_to_center < brake_time:
-                scale = clamp(
-                    time_to_center / max(0.01, brake_time),
-                    MOTION_CFG["approach_min_scale"], 1.0,
-                )
+                scale = clamp(time_to_center / max(0.01, brake_time), MOTION_CFG['approach_min_scale'], 1.0)
                 target *= scale
-
         if 0.0 < abs(target) < min_hz:
             target = min_hz if target > 0.0 else -min_hz
-        return target, False
+        return (target, False)
 
-    def update_tracking_control(self, result, dt):
-        if self.estop or result["center"] is None:
-            self.stop_motion(hard=True)
-            return
-
-        # 激光点闭环：
-        # 原版本：矩形中心 -> 摄像头中心
-        # 当前版本：矩形中心 -> 激光点
-        rect_x, rect_y = result["center"]
-
-        laser = detect_laser_point(self.last_img_np)
-
-        if laser is None:
-            # 激光丢失时停止，避免盲走
-            self.stop_motion(hard=True)
-            return
-
-        laser_x, laser_y = laser
-
-        tx = rect_x
-        ty = rect_y
-
-        err_x = float(tx - laser_x)
-        err_y = float(ty - laser_y)
-
-        vx, vy = result["velocity"]
-
-        x_target, _ = self.compute_axis_target(
-            self.x_pid, err_x, vx, dt,
-            PID_CFG["x_deadzone_px"],
-            MOTION_CFG["x_ff"], MOTION_CFG["x_ff_limit_hz"],
-            self.x_axis.min_hz, self.x_axis.max_hz,
-            self.last_err_x,
-            MOTION_CFG["x_near_cap_hz"],
-            MOTION_CFG["x_mid_cap_hz"],
-            MOTION_CFG["x_far_cap_hz"],
-        )
-        y_target, _ = self.compute_axis_target(
-            self.y_pid, err_y, vy, dt,
-            PID_CFG["y_deadzone_px"],
-            MOTION_CFG["y_ff"], MOTION_CFG["y_ff_limit_hz"],
-            self.y_axis.min_hz, self.y_axis.max_hz,
-            self.last_err_y,
-            MOTION_CFG["y_near_cap_hz"],
-            MOTION_CFG["y_mid_cap_hz"],
-            MOTION_CFG["y_far_cap_hz"],
-        )
-
-        self.last_err_x = err_x
-        self.last_err_y = err_y
-        self.last_x_target_hz = self.x_axis.set_target_hz(x_target)
-        self.last_y_target_hz = self.y_axis.set_target_hz(y_target)
-        self.last_track_x_hz = self.last_x_target_hz
-        self.last_track_y_hz = self.last_y_target_hz
-        self.x_axis.update(dt)
-        self.y_axis.update(dt)
-
-    def coast_factor_for_frame(self, coast_frame, outward=False):
-        """返回普通COAST或向外逃逸COAST的逐帧衰减系数。"""
-        coast_frame = int(clamp(coast_frame, 1, 6))
-        if outward:
-            return MOTION_CFG["coast_out_scale_%d" % coast_frame]
-        return MOTION_CFG["coast_scale_%d" % coast_frame]
-
-    def compute_coast_axis_target(self, error_px, velocity_px_s, deadzone_px,
-                                  kp, ff_gain, coast_frame,
-                                  min_hz, normal_max_hz, outward_max_hz,
-                                  edge_error_px, last_track_hz, axis_max_hz):
-        """根据目标运动方向选择制动COAST或边缘恢复COAST。"""
-        if abs(error_px) <= deadzone_px:
-            return 0.0
-
-        moving_outward = (
-            error_px * velocity_px_s > 0.0
-            and abs(error_px) >= MOTION_CFG["coast_outward_error_px"]
-            and abs(velocity_px_s) >= MOTION_CFG["coast_outward_velocity_px_s"]
-        )
-
-        if moving_outward:
-            factor = self.coast_factor_for_frame(coast_frame, outward=True)
-            if factor <= 0.0:
-                return 0.0
-
-            target = (
-                kp * error_px
-                + MOTION_CFG["coast_out_ff_scale"] * ff_gain * velocity_px_s
-            ) * factor
-
-            reference_abs = abs(float(last_track_hz))
-            if abs(error_px) >= edge_error_px:
-                # 真正靠近画面边缘时允许继续追赶，但仍以最后有效TRACK速度为基准。
-                reference_cap = (
-                    reference_abs * MOTION_CFG["coast_reference_gain"]
-                    + MOTION_CFG["coast_edge_reference_margin_hz"]
-                )
-                cap_hz = min(
-                    outward_max_hz * MOTION_CFG["coast_edge_boost"],
-                    max(normal_max_hz, reference_cap),
-                    axis_max_hz,
-                )
-            else:
-                # 非边缘漏检不得从低速/零速突然重新加速到数百Hz。
-                reference_cap = (
-                    reference_abs * MOTION_CFG["coast_reference_gain"]
-                    + MOTION_CFG["coast_reference_margin_hz"]
-                )
-                cap_hz = min(
-                    outward_max_hz,
-                    max(min_hz, reference_cap),
-                    axis_max_hz,
-                )
-            target = clamp(target, -cap_hz, cap_hz)
-        else:
-            factor = self.coast_factor_for_frame(coast_frame, outward=False)
-            if factor <= 0.0:
-                return 0.0
-
-            # 正在向中心靠近且预计即将跨越中心时立即制动。
-            predicted_error = (
-                error_px + velocity_px_s * MOTION_CFG["coast_predict_stop_s"]
-            )
-            if error_px * predicted_error <= 0.0:
-                return 0.0
-
-            target = (
-                kp * error_px
-                + MOTION_CFG["coast_ff_scale"] * ff_gain * velocity_px_s
-            ) * factor
-            target = clamp(target, -normal_max_hz, normal_max_hz)
-
-        if 0.0 < abs(target) < min_hz:
-            target = min_hz if target > 0.0 else -min_hz
-        return target
-
-    def update_coast_control(self, result, dt):
-        if (
-            self.estop
-            or not MOTION_CFG["coast_enable"]
-            or result.get("center") is None
-        ):
-            self.stop_motion(hard=True)
-            return
-
-        coast_frame = int(result.get("miss_frames", 1))
-        tx, ty = result["center"]
-        vx, vy = result.get("velocity", (0.0, 0.0))
-        err_x = float(tx - self.cx0)
-        err_y = float(ty - self.cy0)
-
-        x_target = self.compute_coast_axis_target(
-            err_x, vx, PID_CFG["x_deadzone_px"],
-            self.x_pid.kp, MOTION_CFG["x_ff"], coast_frame,
-            self.x_axis.min_hz,
-            MOTION_CFG["x_coast_max_hz"],
-            MOTION_CFG["x_coast_out_max_hz"],
-            MOTION_CFG["x_edge_error_px"],
-            self.last_track_x_hz,
-            self.x_axis.max_hz,
-        )
-        y_target = self.compute_coast_axis_target(
-            err_y, vy, PID_CFG["y_deadzone_px"],
-            self.y_pid.kp, MOTION_CFG["y_ff"], coast_frame,
-            self.y_axis.min_hz,
-            MOTION_CFG["y_coast_max_hz"],
-            MOTION_CFG["y_coast_out_max_hz"],
-            MOTION_CFG["y_edge_error_px"],
-            self.last_track_y_hz,
-            self.y_axis.max_hz,
-        )
-
-        self.last_x_target_hz = self.x_axis.set_target_hz(x_target)
-        self.last_y_target_hz = self.y_axis.set_target_hz(y_target)
-        self.x_axis.update(dt)
-        self.y_axis.update(dt)
+    def _pause_motion_preserve_state(self):
+        self.last_x_target_hz = 0.0
+        self.last_y_target_hz = 0.0
+        self.x_axis.hard_stop()
+        self.y_axis.hard_stop()
 
     def _jog_axis_blocking(self, axis, signed_hz, duration_ms):
         """低速短时点动。用于上电自检和串口手动测试。"""
         self.stop_motion(hard=True)
         axis.set_enabled(True)
         axis.set_target_hz(float(signed_hz))
-
         start_ms = time.ticks_ms()
         last_ms = start_ms
         while time.ticks_diff(time.ticks_ms(), start_ms) < int(duration_ms):
@@ -2457,373 +2903,320 @@ class K230RectangleStepperTrackerV31:
             last_ms = now_ms
             axis.update(dt)
             time.sleep_ms(int(SELF_TEST_LOOP_DT_MS))
-
         axis.hard_stop()
         time.sleep_ms(int(SELF_TEST_PAUSE_MS))
-
-    def startup_motor_self_test(self):
-        """启动时自动让 X/Y 轴正反各点动一次；不依赖视觉目标。"""
-        if not STARTUP_MOTOR_SELF_TEST:
-            print("Motor self-test skipped")
-            return
-
-        print("--- D36A startup motor self-test begin ---")
-        print("EN1/EN2 must already be tied to D36A 5V; motors should have holding torque")
-        sequence = (
-            ("X+", self.x_axis, +SELF_TEST_HZ),
-            ("X-", self.x_axis, -SELF_TEST_HZ),
-            ("Y+", self.y_axis, +SELF_TEST_HZ),
-            ("Y-", self.y_axis, -SELF_TEST_HZ),
-        )
-        for label, axis, hz in sequence:
-            print("SELFTEST %s %.0fHz %dms" % (label, hz, SELF_TEST_RUN_MS))
-            self._jog_axis_blocking(axis, hz, SELF_TEST_RUN_MS)
-
-        self.stop_motion(hard=True)
-        self.x_axis.zero_virtual_position()
-        self.y_axis.zero_virtual_position()
-        print("--- D36A startup motor self-test end; virtual steps reset ---")
 
     def handle_uart(self):
         packets = self.uart.read_packets(UART_MAX_PACKETS_PER_LOOP)
         latest_slider = {}
         commands = []
         for parts in packets:
-            if parts and parts[0].strip().lower() == "slider" and len(parts) >= 3:
+            if parts and parts[0].strip().lower() == 'slider' and (len(parts) >= 3):
                 latest_slider[parts[1].strip().lower()] = parts[2]
             else:
                 commands.append(parts)
         for name, value in latest_slider.items():
             self.apply_slider(name, value)
-
         for parts in commands:
             if not parts:
                 continue
             typ = parts[0].strip().lower()
-            cmd = parts[1].strip().lower() if len(parts) >= 2 else ""
-
-            if typ in ("sv", "key", "stepper", "motor") and cmd in ("estop", "emergency"):
+            cmd = parts[1].strip().lower() if len(parts) >= 2 else ''
+            if typ in ('sv', 'key', 'stepper', 'motor') and cmd in ('estop', 'emergency'):
                 self.emergency_stop()
-                self.uart.send("[stepper,estop,1]")
-            elif typ in ("sv", "stepper", "motor") and cmd in ("restart", "resume"):
+                self.uart.send('[stepper,estop,1]')
+            elif typ in ('sv', 'stepper', 'motor') and cmd in ('restart', 'resume'):
                 self.restart_after_estop()
-                self.uart.send("[stepper,estop,0]")
-            elif typ == "key" and cmd in ("start", "mode"):
+                self.uart.send('[stepper,estop,0]')
+            elif typ == 'key' and cmd in ('start', 'mode'):
                 self.tracking_enabled = True
                 self.restart_after_estop()
-                self.uart.send("[stepper,tracking,1]")
-            elif typ == "key" and cmd == "stop":
+                self.uart.send('[stepper,tracking,1]')
+            elif typ == 'key' and cmd == 'stop':
                 self.tracking_enabled = False
                 self.stop_motion(hard=True)
-                self.uart.send("[stepper,tracking,0]")
-            elif typ in ("stepper", "motor") and cmd == "zero":
+                self.uart.send('[stepper,tracking,0]')
+            elif typ in ('stepper', 'motor') and cmd == 'zero':
                 self.stop_motion(hard=True)
                 self.x_axis.zero_virtual_position()
                 self.y_axis.zero_virtual_position()
-                self.uart.send("[stepper,zero,ok]")
-            elif typ in ("stepper", "motor") and cmd in ("stop", "reset"):
+                self.uart.send('[stepper,zero,ok]')
+            elif typ in ('stepper', 'motor') and cmd in ('stop', 'reset'):
                 self.stop_and_reset_tracker(zero_virtual=False)
-                self.uart.send("[stepper,stop,ok]")
-            elif typ in ("stepper", "motor") and cmd in ("test", "selftest"):
+                self.uart.send('[stepper,stop,ok]')
+            elif typ in ('stepper', 'motor') and cmd in ('test', 'selftest'):
                 self.common_enable.enable()
                 self.estop = False
                 self.startup_motor_self_test()
-                self.uart.send("[stepper,selftest,ok]")
-            elif typ in ("stepper", "motor") and cmd == "jog" and len(parts) >= 5:
+                self.uart.send('[stepper,selftest,ok]')
+            elif typ in ('stepper', 'motor') and cmd == 'jog' and (len(parts) >= 5):
                 axis_name = parts[2].strip().lower()
                 try:
                     jog_hz = float(parts[3])
                     jog_ms = int(float(parts[4]))
                     jog_hz = clamp(jog_hz, -450.0, 450.0)
                     jog_ms = int(clamp(jog_ms, 50, 3000))
-                    axis = self.x_axis if axis_name == "x" else self.y_axis
+                    axis = self.x_axis if axis_name == 'x' else self.y_axis
                     self.common_enable.enable()
                     self.estop = False
                     self._jog_axis_blocking(axis, jog_hz, jog_ms)
-                    self.uart.send("[stepper,jog,%s,%.0f,%d,ok]" % (axis_name, jog_hz, jog_ms))
+                    self.uart.send('[stepper,jog,%s,%.0f,%d,ok]' % (axis_name, jog_hz, jog_ms))
                 except Exception as e:
-                    self.uart.send("[stepper,jog,error,%s]" % str(e))
-            elif typ == "servo" and cmd == "center":
-                # 兼容旧网页命令，但无编码器时不能自动回中。
+                    self.uart.send('[stepper,jog,error,%s]' % str(e))
+            elif typ == 'servo' and cmd == 'center':
                 self.stop_and_reset_tracker(zero_virtual=False)
-                self.uart.send("[stepper,stopped,no_home_reference]")
-            elif typ in ("stepper", "motor", "servo") and cmd in ("get_state", "get_angle"):
-                self.uart.send(
-                    "[stepper,state,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%d,%d]" % (
-                        self.x_axis.target_hz, self.y_axis.target_hz,
-                        self.x_axis.applied_hz, self.y_axis.applied_hz,
-                        self.x_axis.virtual_steps, self.y_axis.virtual_steps,
-                        self.x_axis.limit_hit, self.y_axis.limit_hit,
-                    )
-                )
-            elif typ in ("stepper", "motor", "servo") and cmd in ("get_limit", "get_limits"):
-                x_limit_deg = (
-                    self.x_axis.soft_limit_steps * 360.0 / float(PULSES_PER_REV)
-                )
-                y_limit_deg = (
-                    self.y_axis.soft_limit_steps * 360.0 / float(PULSES_PER_REV)
-                )
-                self.uart.send(
-                    "[stepper,limit,%.1f,%.1f,%.2f,%.2f]" % (
-                        self.x_axis.soft_limit_steps,
-                        self.y_axis.soft_limit_steps,
-                        x_limit_deg,
-                        y_limit_deg,
-                    )
-                )
-            elif typ in ("stepper", "motor", "servo") and cmd == "get_pid":
-                self.uart.send(
-                    "[pid,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.1f,%.1f,%.1f,%.1f,%.2f]" % (
-                        self.x_pid.kp, self.x_pid.ki, self.x_pid.kd,
-                        self.y_pid.kp, self.y_pid.ki, self.y_pid.kd,
-                        self.x_axis.min_hz, self.y_axis.min_hz,
-                        self.x_axis.max_hz, self.y_axis.max_hz,
-                        MOTION_CFG["speed_scale"],
-                    )
-                )
-            elif typ == "system" and cmd == "ping":
-                self.uart.send("[system,pong]")
+                self.uart.send('[stepper,stopped,no_home_reference]')
+            elif typ in ('stepper', 'motor', 'servo') and cmd in ('get_state', 'get_angle'):
+                self.uart.send('[stepper,state,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%d,%d]' % (self.x_axis.target_hz, self.y_axis.target_hz, self.x_axis.applied_hz, self.y_axis.applied_hz, self.x_axis.virtual_steps, self.y_axis.virtual_steps, self.x_axis.limit_hit, self.y_axis.limit_hit))
+            elif typ in ('stepper', 'motor', 'servo') and cmd in ('get_limit', 'get_limits'):
+                x_limit_deg = self.x_axis.soft_limit_steps * 360.0 / float(PULSES_PER_REV)
+                y_limit_deg = self.y_axis.soft_limit_steps * 360.0 / float(PULSES_PER_REV)
+                self.uart.send('[stepper,limit,%.1f,%.1f,%.2f,%.2f]' % (self.x_axis.soft_limit_steps, self.y_axis.soft_limit_steps, x_limit_deg, y_limit_deg))
+            elif typ in ('stepper', 'motor', 'servo') and cmd == 'get_pid':
+                self.uart.send('[pid,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.1f,%.1f,%.1f,%.1f,%.2f]' % (self.x_pid.kp, self.x_pid.ki, self.x_pid.kd, self.y_pid.kp, self.y_pid.ki, self.y_pid.kd, self.x_axis.min_hz, self.y_axis.min_hz, self.x_axis.max_hz, self.y_axis.max_hz, MOTION_CFG['speed_scale']))
+            elif typ == 'system' and cmd == 'ping':
+                self.uart.send('[system,pong]')
             else:
-                self.uart.send("[ack,error,unknown_command,%s,%s]" % (typ, cmd))
+                self.uart.send('[ack,error,unknown_command,%s,%s]' % (typ, cmd))
 
-    def apply_slider(self, name, raw_value):
+    def _apply_base_slider(self, name, raw_value):
         global PLOT_INTERVAL_MS, DIAG_INTERVAL_MS, PLOT_MODE, ENABLE_DIAG_PACKET, ENABLE_PERF_PACKET
         try:
             value = float(raw_value)
         except Exception:
-            self.uart.send("[ack,error,bad_value,%s]" % name)
+            self.uart.send('[ack,error,bad_value,%s]' % name)
             return
-
         ok = True
         reset_pid = False
         name = name.strip().lower()
-
-        if name in ("xkp", "x_kp", "pankp", "pan_kp"):
-            self.x_pid.kp = clamp(value, 0.0, 20.0); reset_pid = True
-        elif name in ("xki", "x_ki", "panki", "pan_ki"):
-            self.x_pid.ki = clamp(value, 0.0, 10.0); reset_pid = True
-        elif name in ("xkd", "x_kd", "pankd", "pan_kd"):
-            self.x_pid.kd = clamp(value, 0.0, 5.0); reset_pid = True
-        elif name in ("ykp", "y_kp", "tiltkp", "tilt_kp"):
-            self.y_pid.kp = clamp(value, 0.0, 20.0); reset_pid = True
-        elif name in ("yki", "y_ki", "tiltki", "tilt_ki"):
-            self.y_pid.ki = clamp(value, 0.0, 10.0); reset_pid = True
-        elif name in ("ykd", "y_kd", "tiltkd", "tilt_kd"):
-            self.y_pid.kd = clamp(value, 0.0, 5.0); reset_pid = True
-        elif name == "kp":
-            self.x_pid.kp = self.y_pid.kp = clamp(value, 0.0, 20.0); reset_pid = True
-        elif name == "ki":
-            self.x_pid.ki = self.y_pid.ki = clamp(value, 0.0, 10.0); reset_pid = True
-        elif name == "kd":
-            self.x_pid.kd = self.y_pid.kd = clamp(value, 0.0, 5.0); reset_pid = True
-        elif name in ("deadzone", "dead", "deadzonepx"):
-            PID_CFG["x_deadzone_px"] = PID_CFG["y_deadzone_px"] = clamp(value, 0.0, 80.0)
+        if name in ('xkp', 'x_kp', 'pankp', 'pan_kp'):
+            self.x_pid.kp = clamp(value, 0.0, 20.0)
             reset_pid = True
-        elif name in ("xdead", "x_dead", "pandead", "pan_dead"):
-            PID_CFG["x_deadzone_px"] = clamp(value, 0.0, 80.0); reset_pid = True
-        elif name in ("ydead", "y_dead", "tiltdead", "tilt_dead"):
-            PID_CFG["y_deadzone_px"] = clamp(value, 0.0, 80.0); reset_pid = True
-        elif name in ("xff", "x_ff", "panff"):
-            MOTION_CFG["x_ff"] = clamp(value, 0.0, 3.0)
-        elif name in ("yff", "y_ff", "tiltff"):
-            MOTION_CFG["y_ff"] = clamp(value, 0.0, 3.0)
-        elif name in ("lead", "predict", "leadtime"):
-            TRACK_CFG["control_lead_s"] = clamp(value, 0.0, 0.20)
-        elif name in ("speedscale", "speed_scale", "speed", "motorscale"):
-            MOTION_CFG["speed_scale"] = clamp(value, 0.30, 2.50)
-        elif name in ("xnearcap", "x_near_cap"):
-            MOTION_CFG["x_near_cap_hz"] = clamp(value, 30.0, self.x_axis.max_hz)
-        elif name in ("ynearcap", "y_near_cap"):
-            MOTION_CFG["y_near_cap_hz"] = clamp(value, 30.0, self.y_axis.max_hz)
-        elif name in ("xmidcap", "x_mid_cap"):
-            MOTION_CFG["x_mid_cap_hz"] = clamp(value, 30.0, self.x_axis.max_hz)
-        elif name in ("ymidcap", "y_mid_cap"):
-            MOTION_CFG["y_mid_cap_hz"] = clamp(value, 30.0, self.y_axis.max_hz)
-        elif name in ("xfarcap", "x_far_cap"):
-            MOTION_CFG["x_far_cap_hz"] = clamp(value, 30.0, self.x_axis.max_hz)
-        elif name in ("yfarcap", "y_far_cap"):
-            MOTION_CFG["y_far_cap_hz"] = clamp(value, 30.0, self.y_axis.max_hz)
-        elif name in ("braketime", "approach_brake_time"):
-            MOTION_CFG["approach_brake_time_s"] = clamp(value, 0.03, 0.60)
-        elif name in ("predictstop", "approach_predict"):
-            MOTION_CFG["approach_predict_s"] = clamp(value, 0.0, 0.25)
-        elif name in ("approachmaxerr", "approach_max_error"):
-            MOTION_CFG["approach_max_error_px"] = clamp(value, 20.0, 180.0)
-        elif name in ("errorfloor", "error_floor_start"):
-            MOTION_CFG["error_floor_start_px"] = clamp(value, 6.0, 80.0)
-        elif name in ("xcoastmax", "x_coast_max"):
-            MOTION_CFG["x_coast_max_hz"] = clamp(value, 0.0, self.x_axis.max_hz)
-        elif name in ("ycoastmax", "y_coast_max"):
-            MOTION_CFG["y_coast_max_hz"] = clamp(value, 0.0, self.y_axis.max_hz)
-        elif name in ("coast1", "coast_scale_1"):
-            MOTION_CFG["coast_scale_1"] = clamp(value, 0.0, 1.20)
-        elif name in ("coast2", "coast_scale_2"):
-            MOTION_CFG["coast_scale_2"] = clamp(value, 0.0, 1.20)
-        elif name in ("coast3", "coast_scale_3"):
-            MOTION_CFG["coast_scale_3"] = clamp(value, 0.0, 1.20)
-        elif name in ("coast4", "coast_scale_4"):
-            MOTION_CFG["coast_scale_4"] = clamp(value, 0.0, 1.20)
-        elif name in ("coast5", "coast_scale_5"):
-            MOTION_CFG["coast_scale_5"] = clamp(value, 0.0, 1.20)
-        elif name in ("coast6", "coast_scale_6"):
-            MOTION_CFG["coast_scale_6"] = clamp(value, 0.0, 1.20)
-        elif name in ("coastpredict", "coast_predict_stop"):
-            MOTION_CFG["coast_predict_stop_s"] = clamp(value, 0.0, 0.25)
-        elif name in ("coastouterr", "coast_outward_error"):
-            MOTION_CFG["coast_outward_error_px"] = clamp(value, 5.0, 250.0)
-        elif name in ("coastoutvel", "coast_outward_velocity"):
-            MOTION_CFG["coast_outward_velocity_px_s"] = clamp(value, 0.0, 1000.0)
-        elif name in ("xcoastoutmax", "x_coast_out_max"):
-            MOTION_CFG["x_coast_out_max_hz"] = clamp(
-                value, 0.0, self.x_axis.max_hz
-            )
-        elif name in ("ycoastoutmax", "y_coast_out_max"):
-            MOTION_CFG["y_coast_out_max_hz"] = clamp(
-                value, 0.0, self.y_axis.max_hz
-            )
-        elif name in ("coastedgeboost", "coast_edge_boost"):
-            MOTION_CFG["coast_edge_boost"] = clamp(value, 1.0, 1.40)
-        elif name in ("coastrefgain", "coast_reference_gain"):
-            MOTION_CFG["coast_reference_gain"] = clamp(value, 0.80, 1.60)
-        elif name in ("coastrefmargin", "coast_reference_margin"):
-            MOTION_CFG["coast_reference_margin_hz"] = clamp(value, 0.0, 250.0)
-        elif name in ("relaxedstride", "relaxed_scan_stride"):
-            RECT_CFG["full_scan_after_miss"] = int(clamp(round(value), 1, 6))
-        elif name in ("recovervar", "measurement_var_recover_scale"):
-            TRACK_CFG["measurement_var_recover_scale"] = clamp(value, 1.0, 4.0)
-        elif name in ("lowvar", "measurement_var_low_scale"):
-            TRACK_CFG["measurement_var_low_scale"] = clamp(value, 1.0, 4.0)
-        elif name in ("xvelcap", "max_velocity_x"):
-            TRACK_CFG["max_velocity_x_px_s"] = clamp(value, 100.0, 1200.0)
-        elif name in ("yvelcap", "max_velocity_y"):
-            TRACK_CFG["max_velocity_y_px_s"] = clamp(value, 100.0, 1200.0)
-        elif name in ("xminhz", "x_min_hz", "panminhz"):
+        elif name in ('xki', 'x_ki', 'panki', 'pan_ki'):
+            self.x_pid.ki = clamp(value, 0.0, 10.0)
+            reset_pid = True
+        elif name in ('xkd', 'x_kd', 'pankd', 'pan_kd'):
+            self.x_pid.kd = clamp(value, 0.0, 5.0)
+            reset_pid = True
+        elif name in ('ykp', 'y_kp', 'tiltkp', 'tilt_kp'):
+            self.y_pid.kp = clamp(value, 0.0, 20.0)
+            reset_pid = True
+        elif name in ('yki', 'y_ki', 'tiltki', 'tilt_ki'):
+            self.y_pid.ki = clamp(value, 0.0, 10.0)
+            reset_pid = True
+        elif name in ('ykd', 'y_kd', 'tiltkd', 'tilt_kd'):
+            self.y_pid.kd = clamp(value, 0.0, 5.0)
+            reset_pid = True
+        elif name == 'kp':
+            self.x_pid.kp = self.y_pid.kp = clamp(value, 0.0, 20.0)
+            reset_pid = True
+        elif name == 'ki':
+            self.x_pid.ki = self.y_pid.ki = clamp(value, 0.0, 10.0)
+            reset_pid = True
+        elif name == 'kd':
+            self.x_pid.kd = self.y_pid.kd = clamp(value, 0.0, 5.0)
+            reset_pid = True
+        elif name in ('deadzone', 'dead', 'deadzonepx'):
+            PID_CFG['x_deadzone_px'] = PID_CFG['y_deadzone_px'] = clamp(value, 0.0, 80.0)
+            reset_pid = True
+        elif name in ('xdead', 'x_dead', 'pandead', 'pan_dead'):
+            PID_CFG['x_deadzone_px'] = clamp(value, 0.0, 80.0)
+            reset_pid = True
+        elif name in ('ydead', 'y_dead', 'tiltdead', 'tilt_dead'):
+            PID_CFG['y_deadzone_px'] = clamp(value, 0.0, 80.0)
+            reset_pid = True
+        elif name in ('xff', 'x_ff', 'panff'):
+            MOTION_CFG['x_ff'] = clamp(value, 0.0, 3.0)
+        elif name in ('yff', 'y_ff', 'tiltff'):
+            MOTION_CFG['y_ff'] = clamp(value, 0.0, 3.0)
+        elif name in ('lead', 'predict', 'leadtime'):
+            TRACK_CFG['control_lead_s'] = clamp(value, 0.0, 0.2)
+        elif name in ('speedscale', 'speed_scale', 'speed', 'motorscale'):
+            MOTION_CFG['speed_scale'] = clamp(value, 0.3, 2.5)
+        elif name in ('xnearcap', 'x_near_cap'):
+            MOTION_CFG['x_near_cap_hz'] = clamp(value, 30.0, self.x_axis.max_hz)
+        elif name in ('ynearcap', 'y_near_cap'):
+            MOTION_CFG['y_near_cap_hz'] = clamp(value, 30.0, self.y_axis.max_hz)
+        elif name in ('xmidcap', 'x_mid_cap'):
+            MOTION_CFG['x_mid_cap_hz'] = clamp(value, 30.0, self.x_axis.max_hz)
+        elif name in ('ymidcap', 'y_mid_cap'):
+            MOTION_CFG['y_mid_cap_hz'] = clamp(value, 30.0, self.y_axis.max_hz)
+        elif name in ('xfarcap', 'x_far_cap'):
+            MOTION_CFG['x_far_cap_hz'] = clamp(value, 30.0, self.x_axis.max_hz)
+        elif name in ('yfarcap', 'y_far_cap'):
+            MOTION_CFG['y_far_cap_hz'] = clamp(value, 30.0, self.y_axis.max_hz)
+        elif name in ('braketime', 'approach_brake_time'):
+            MOTION_CFG['approach_brake_time_s'] = clamp(value, 0.03, 0.6)
+        elif name in ('predictstop', 'approach_predict'):
+            MOTION_CFG['approach_predict_s'] = clamp(value, 0.0, 0.25)
+        elif name in ('approachmaxerr', 'approach_max_error'):
+            MOTION_CFG['approach_max_error_px'] = clamp(value, 20.0, 180.0)
+        elif name in ('errorfloor', 'error_floor_start'):
+            MOTION_CFG['error_floor_start_px'] = clamp(value, 6.0, 80.0)
+        elif name in ('xcoastmax', 'x_coast_max'):
+            MOTION_CFG['x_coast_max_hz'] = clamp(value, 0.0, self.x_axis.max_hz)
+        elif name in ('ycoastmax', 'y_coast_max'):
+            MOTION_CFG['y_coast_max_hz'] = clamp(value, 0.0, self.y_axis.max_hz)
+        elif name in ('coast1', 'coast_scale_1'):
+            MOTION_CFG['coast_scale_1'] = clamp(value, 0.0, 1.2)
+        elif name in ('coast2', 'coast_scale_2'):
+            MOTION_CFG['coast_scale_2'] = clamp(value, 0.0, 1.2)
+        elif name in ('coast3', 'coast_scale_3'):
+            MOTION_CFG['coast_scale_3'] = clamp(value, 0.0, 1.2)
+        elif name in ('coast4', 'coast_scale_4'):
+            MOTION_CFG['coast_scale_4'] = clamp(value, 0.0, 1.2)
+        elif name in ('coast5', 'coast_scale_5'):
+            MOTION_CFG['coast_scale_5'] = clamp(value, 0.0, 1.2)
+        elif name in ('coast6', 'coast_scale_6'):
+            MOTION_CFG['coast_scale_6'] = clamp(value, 0.0, 1.2)
+        elif name in ('coastpredict', 'coast_predict_stop'):
+            MOTION_CFG['coast_predict_stop_s'] = clamp(value, 0.0, 0.25)
+        elif name in ('coastouterr', 'coast_outward_error'):
+            MOTION_CFG['coast_outward_error_px'] = clamp(value, 5.0, 250.0)
+        elif name in ('coastoutvel', 'coast_outward_velocity'):
+            MOTION_CFG['coast_outward_velocity_px_s'] = clamp(value, 0.0, 1000.0)
+        elif name in ('xcoastoutmax', 'x_coast_out_max'):
+            MOTION_CFG['x_coast_out_max_hz'] = clamp(value, 0.0, self.x_axis.max_hz)
+        elif name in ('ycoastoutmax', 'y_coast_out_max'):
+            MOTION_CFG['y_coast_out_max_hz'] = clamp(value, 0.0, self.y_axis.max_hz)
+        elif name in ('coastedgeboost', 'coast_edge_boost'):
+            MOTION_CFG['coast_edge_boost'] = clamp(value, 1.0, 1.4)
+        elif name in ('coastrefgain', 'coast_reference_gain'):
+            MOTION_CFG['coast_reference_gain'] = clamp(value, 0.8, 1.6)
+        elif name in ('coastrefmargin', 'coast_reference_margin'):
+            MOTION_CFG['coast_reference_margin_hz'] = clamp(value, 0.0, 250.0)
+        elif name in ('relaxedstride', 'relaxed_scan_stride'):
+            RECT_CFG['full_scan_after_miss'] = int(clamp(round(value), 1, 6))
+        elif name in ('recovervar', 'measurement_var_recover_scale'):
+            TRACK_CFG['measurement_var_recover_scale'] = clamp(value, 1.0, 4.0)
+        elif name in ('lowvar', 'measurement_var_low_scale'):
+            TRACK_CFG['measurement_var_low_scale'] = clamp(value, 1.0, 4.0)
+        elif name in ('xvelcap', 'max_velocity_x'):
+            TRACK_CFG['max_velocity_x_px_s'] = clamp(value, 100.0, 1200.0)
+        elif name in ('yvelcap', 'max_velocity_y'):
+            TRACK_CFG['max_velocity_y_px_s'] = clamp(value, 100.0, 1200.0)
+        elif name in ('xminhz', 'x_min_hz', 'panminhz'):
             self.x_axis.min_hz = clamp(value, 5.0, self.x_axis.max_hz)
-        elif name in ("yminhz", "y_min_hz", "tiltminhz"):
+        elif name in ('yminhz', 'y_min_hz', 'tiltminhz'):
             self.y_axis.min_hz = clamp(value, 5.0, self.y_axis.max_hz)
-        elif name in ("minhz", "min_hz"):
+        elif name in ('minhz', 'min_hz'):
             v = clamp(value, 5.0, min(self.x_axis.max_hz, self.y_axis.max_hz))
             self.x_axis.min_hz = self.y_axis.min_hz = v
-        elif name in ("xmaxhz", "x_max_hz", "panmaxhz"):
+        elif name in ('xmaxhz', 'x_max_hz', 'panmaxhz'):
             self.x_axis.max_hz = clamp(value, self.x_axis.min_hz, 5000.0)
             self.x_pid.output_limit = self.x_axis.max_hz
-        elif name in ("ymaxhz", "y_max_hz", "tiltmaxhz"):
+        elif name in ('ymaxhz', 'y_max_hz', 'tiltmaxhz'):
             self.y_axis.max_hz = clamp(value, self.y_axis.min_hz, 5000.0)
             self.y_pid.output_limit = self.y_axis.max_hz
-        elif name in ("maxhz", "max_hz", "limit", "outputlimit", "output_limit"):
+        elif name in ('maxhz', 'max_hz', 'limit', 'outputlimit', 'output_limit'):
             v = clamp(value, max(self.x_axis.min_hz, self.y_axis.min_hz), 5000.0)
             self.x_axis.max_hz = self.y_axis.max_hz = v
             self.x_pid.output_limit = self.y_pid.output_limit = v
-        elif name in ("xaccel", "x_accel"):
+        elif name in ('xaccel', 'x_accel'):
             self.x_axis.accel_hz_s = clamp(value, 20.0, 30000.0)
-        elif name in ("yaccel", "y_accel"):
+        elif name in ('yaccel', 'y_accel'):
             self.y_axis.accel_hz_s = clamp(value, 20.0, 30000.0)
-        elif name in ("xdecel", "x_decel"):
+        elif name in ('xdecel', 'x_decel'):
             self.x_axis.decel_hz_s = clamp(value, 20.0, 30000.0)
-        elif name in ("ydecel", "y_decel"):
+        elif name in ('ydecel', 'y_decel'):
             self.y_axis.decel_hz_s = clamp(value, 20.0, 30000.0)
-        elif name in ("accel", "ramp"):
+        elif name in ('accel', 'ramp'):
             v = clamp(value, 20.0, 30000.0)
             self.x_axis.accel_hz_s = self.y_axis.accel_hz_s = v
-        elif name == "decel":
+        elif name == 'decel':
             v = clamp(value, 20.0, 30000.0)
             self.x_axis.decel_hz_s = self.y_axis.decel_hz_s = v
-        elif name in ("xreverse", "x_reverse", "panreverse"):
+        elif name in ('xreverse', 'x_reverse', 'panreverse'):
             self.x_axis.reverse = bool(value >= 0.5)
             self.x_axis.hard_stop()
             self.x_axis.direction_sign = 0
-        elif name in ("yreverse", "y_reverse", "tiltreverse"):
+        elif name in ('yreverse', 'y_reverse', 'tiltreverse'):
             self.y_axis.reverse = bool(value >= 0.5)
             self.y_axis.hard_stop()
             self.y_axis.direction_sign = 0
-        elif name in ("xlimitsteps", "x_limit_steps"):
+        elif name in ('xlimitsteps', 'x_limit_steps'):
             self.x_axis.soft_limit_steps = max(0.0, value)
-        elif name in ("ylimitsteps", "y_limit_steps"):
+        elif name in ('ylimitsteps', 'y_limit_steps'):
             self.y_axis.soft_limit_steps = max(0.0, value)
-        elif name in ("xlimitdeg", "x_limit_deg", "panlimitdeg"):
-            self.x_axis.soft_limit_steps = max(
-                0.0, value * float(PULSES_PER_REV) / 360.0
-            )
-        elif name in ("ylimitdeg", "y_limit_deg", "tiltlimitdeg"):
-            self.y_axis.soft_limit_steps = max(
-                0.0, value * float(PULSES_PER_REV) / 360.0
-            )
-        elif name in ("coast", "coastframes", "maxlost"):
-            TRACK_CFG["max_coast_frames"] = int(clamp(round(value), 0, 8))
-        elif name in ("coasten", "coast_enable"):
-            MOTION_CFG["coast_enable"] = bool(value >= 0.5)
-        elif name in ("kalmanq", "accelnoise"):
-            TRACK_CFG["kalman_accel_noise"] = clamp(value, 30.0, 2000.0)
-        elif name in ("gate", "gatetracking", "trackgate"):
-            TRACK_CFG["gate_tracking_px"] = clamp(value, 20.0, 400.0)
-        elif name in ("reacquiregate", "gatereacquire"):
-            TRACK_CFG["gate_reacquire_px"] = clamp(value, 40.0, 500.0)
-        elif name in ("minarea", "area"):
-            RECT_CFG["min_area_detect"] = clamp(value, 30.0, 12000.0)
-        elif name in ("amin", "aspectmin", "ratiomin"):
-            RECT_CFG["aspect_min"] = clamp(value, 1.0, 2.8)
-        elif name in ("amax", "aspectmax", "ratiomax"):
-            RECT_CFG["aspect_max"] = clamp(value, 1.05, 3.5)
-        elif name in ("targetaspect", "targetratio", "aspect"):
-            RECT_CFG["target_aspect"] = clamp(value, 1.0, 3.0)
-        elif name in ("rectsearchth", "searchth", "rect_threshold_search"):
-            RECT_CFG["threshold_search"] = int(clamp(round(value), 500, 50000))
-        elif name in ("recttrackth", "trackth", "rect_threshold_track"):
-            RECT_CFG["threshold_track"] = int(clamp(round(value), 500, 50000))
-        elif name in ("rectcoastth", "coastth", "rect_threshold_coast"):
-            RECT_CFG["threshold_coast"] = int(clamp(round(value), 500, 50000))
-        elif name in ("qhigh", "qualityhigh"):
-            RECT_CFG["quality_high"] = clamp(value, 0.10, 0.95)
-        elif name in ("qlow", "qualitylow"):
-            RECT_CFG["quality_low"] = clamp(value, 0.05, RECT_CFG["quality_high"])
-        elif name in ("qsearch", "qualitysearch", "searchquality"):
-            RECT_CFG["quality_search_recover"] = clamp(value, 0.05, 0.95)
-        elif name in ("lowring", "low_stage_min_ring"):
-            RECT_CFG["low_stage_min_ring"] = clamp(value, 0.0, 1.0)
-        elif name in ("jumpguard", "jump_guard"):
-            TRACK_CFG["jump_guard_px"] = clamp(value, 20.0, 260.0)
-        elif name in ("cvangle", "cv_max_angle_cos"):
-            RECT_CFG["cv_max_angle_cos"] = clamp(value, 0.15, 0.70)
-        elif name in ("nativeen", "native_enable"):
-            RECT_CFG["native_enable"] = bool(value >= 0.5)
-            self.tracker.native_runtime_enabled = RECT_CFG["native_enable"]
+        elif name in ('xlimitdeg', 'x_limit_deg', 'panlimitdeg'):
+            self.x_axis.soft_limit_steps = max(0.0, value * float(PULSES_PER_REV) / 360.0)
+        elif name in ('ylimitdeg', 'y_limit_deg', 'tiltlimitdeg'):
+            self.y_axis.soft_limit_steps = max(0.0, value * float(PULSES_PER_REV) / 360.0)
+        elif name in ('coast', 'coastframes', 'maxlost'):
+            TRACK_CFG['max_coast_frames'] = int(clamp(round(value), 0, 8))
+        elif name in ('coasten', 'coast_enable'):
+            MOTION_CFG['coast_enable'] = bool(value >= 0.5)
+        elif name in ('kalmanq', 'accelnoise'):
+            TRACK_CFG['kalman_accel_noise'] = clamp(value, 30.0, 2000.0)
+        elif name in ('gate', 'gatetracking', 'trackgate'):
+            TRACK_CFG['gate_tracking_px'] = clamp(value, 20.0, 400.0)
+        elif name in ('reacquiregate', 'gatereacquire'):
+            TRACK_CFG['gate_reacquire_px'] = clamp(value, 40.0, 500.0)
+        elif name in ('minarea', 'area'):
+            RECT_CFG['min_area_detect'] = clamp(value, 30.0, 12000.0)
+        elif name in ('amin', 'aspectmin', 'ratiomin'):
+            RECT_CFG['aspect_min'] = clamp(value, 1.0, 2.8)
+        elif name in ('amax', 'aspectmax', 'ratiomax'):
+            RECT_CFG['aspect_max'] = clamp(value, 1.05, 3.5)
+        elif name in ('targetaspect', 'targetratio', 'aspect'):
+            RECT_CFG['target_aspect'] = clamp(value, 1.0, 3.0)
+        elif name in ('rectsearchth', 'searchth', 'rect_threshold_search'):
+            RECT_CFG['threshold_search'] = int(clamp(round(value), 500, 50000))
+        elif name in ('recttrackth', 'trackth', 'rect_threshold_track'):
+            RECT_CFG['threshold_track'] = int(clamp(round(value), 500, 50000))
+        elif name in ('rectcoastth', 'coastth', 'rect_threshold_coast'):
+            RECT_CFG['threshold_coast'] = int(clamp(round(value), 500, 50000))
+        elif name in ('qhigh', 'qualityhigh'):
+            RECT_CFG['quality_high'] = clamp(value, 0.1, 0.95)
+        elif name in ('qlow', 'qualitylow'):
+            RECT_CFG['quality_low'] = clamp(value, 0.05, RECT_CFG['quality_high'])
+        elif name in ('qsearch', 'qualitysearch', 'searchquality'):
+            RECT_CFG['quality_search_recover'] = clamp(value, 0.05, 0.95)
+        elif name in ('lowring', 'low_stage_min_ring'):
+            RECT_CFG['low_stage_min_ring'] = clamp(value, 0.0, 1.0)
+        elif name in ('jumpguard', 'jump_guard'):
+            TRACK_CFG['jump_guard_px'] = clamp(value, 20.0, 260.0)
+        elif name in ('cvangle', 'cv_max_angle_cos'):
+            RECT_CFG['cv_max_angle_cos'] = clamp(value, 0.15, 0.7)
+        elif name in ('nativeen', 'native_enable'):
+            RECT_CFG['native_enable'] = bool(value >= 0.5)
+            self.tracker.native_runtime_enabled = RECT_CFG['native_enable']
             self.tracker.native_slow_count = 0
-        elif name in ("mincontrast", "contrast"):
-            RECT_CFG["min_contrast"] = clamp(value, -40.0, 120.0)
-        elif name in ("roiscalew", "roi_scale_w"):
-            RECT_CFG["roi_scale_w"] = clamp(value, 1.2, 6.0)
-        elif name in ("roiscaleh", "roi_scale_h"):
-            RECT_CFG["roi_scale_h"] = clamp(value, 1.2, 6.0)
-        elif name in ("roiminw", "roi_min_w"):
-            RECT_CFG["roi_min_w"] = int(clamp(round(value), 40, DETECT_WIDTH))
-        elif name in ("roiminh", "roi_min_h"):
-            RECT_CFG["roi_min_h"] = int(clamp(round(value), 40, DETECT_HEIGHT))
-        elif name in ("fullscann", "full_scan_interval"):
-            RECT_CFG["full_scan_interval"] = int(clamp(round(value), 1, 120))
-        elif name in ("refineevery", "corner_refine_every"):
-            RECT_CFG["corner_refine_every"] = int(clamp(round(value), 1, 20))
-        elif name in ("refineenable", "corner_refine_enable"):
-            RECT_CFG["corner_refine_enable"] = bool(value >= 0.5)
-        elif name in ("perfen", "perfenable", "perf_enable"):
+        elif name in ('mincontrast', 'contrast'):
+            RECT_CFG['min_contrast'] = clamp(value, -40.0, 120.0)
+        elif name in ('roiscalew', 'roi_scale_w'):
+            RECT_CFG['roi_scale_w'] = clamp(value, 1.2, 6.0)
+        elif name in ('roiscaleh', 'roi_scale_h'):
+            RECT_CFG['roi_scale_h'] = clamp(value, 1.2, 6.0)
+        elif name in ('roiminw', 'roi_min_w'):
+            RECT_CFG['roi_min_w'] = int(clamp(round(value), 40, DETECT_WIDTH))
+        elif name in ('roiminh', 'roi_min_h'):
+            RECT_CFG['roi_min_h'] = int(clamp(round(value), 40, DETECT_HEIGHT))
+        elif name in ('fullscann', 'full_scan_interval'):
+            RECT_CFG['full_scan_interval'] = int(clamp(round(value), 1, 120))
+        elif name in ('refineevery', 'corner_refine_every'):
+            RECT_CFG['corner_refine_every'] = int(clamp(round(value), 1, 20))
+        elif name in ('refineenable', 'corner_refine_enable'):
+            RECT_CFG['corner_refine_enable'] = bool(value >= 0.5)
+        elif name in ('perfen', 'perfenable', 'perf_enable'):
             ENABLE_PERF_PACKET = bool(value >= 0.5)
-        elif name in ("plotmode", "plot_mode"):
+        elif name in ('plotmode', 'plot_mode'):
             PLOT_MODE = int(clamp(round(value), 0, 2))
-            self.uart.send("[plot-clear]")
-        elif name in ("plotms", "plotinterval", "plot_interval"):
+            self.uart.send('[plot-clear]')
+        elif name in ('plotms', 'plotinterval', 'plot_interval'):
             PLOT_INTERVAL_MS = int(clamp(round(value), 20, 500))
-        elif name in ("diagms", "diaginterval"):
+        elif name in ('diagms', 'diaginterval'):
             DIAG_INTERVAL_MS = int(clamp(round(value), 100, 2000))
-        elif name in ("diagen", "diagenable", "diag_enable"):
+        elif name in ('diagen', 'diagenable', 'diag_enable'):
             ENABLE_DIAG_PACKET = bool(value >= 0.5)
         else:
             ok = False
-
         if ok:
             if reset_pid:
                 self.reset_pid_memory()
-            self.uart.send("[ack,slider,%s,%s]" % (name, str(value)))
+            self.uart.send('[ack,slider,%s,%s]' % (name, str(value)))
         else:
-            self.uart.send("[ack,error,unknown_slider,%s]" % name)
+            self.uart.send('[ack,error,unknown_slider,%s]' % name)
 
     def update_time(self):
         now = time.ticks_ms()
@@ -2833,73 +3226,18 @@ class K230RectangleStepperTrackerV31:
         dt = clamp(dt_ms / 1000.0, CONTROL_DT_MIN, CONTROL_DT_MAX)
         inst_fps = 1000.0 / dt_ms
         self.fps = inst_fps if self.fps <= 0.0 else 0.85 * self.fps + 0.15 * inst_fps
-        return now, dt
+        return (now, dt)
 
-    def state_code(self, result):
+    def _base_state_code(self, result):
         if self.estop or not self.tracking_enabled:
             return 4
-        if result["state"] == STATE_ACQUIRE:
+        if result['state'] == STATE_ACQUIRE:
             return 1
-        if result["state"] == STATE_TRACK:
+        if result['state'] == STATE_TRACK:
             return 2
-        if result["state"] == STATE_COAST:
+        if result['state'] == STATE_COAST:
             return 3
         return 0
-
-    def send_plot(self, result):
-        now = time.ticks_ms()
-        if ticks_diff_ms(now, self.last_plot_ms) < PLOT_INTERVAL_MS:
-            return
-        self.last_plot_ms = now
-        state_code = self.state_code(result)
-
-        if PLOT_MODE == 1:
-            raw = result.get("raw_center")
-            filt = result.get("filtered_center")
-            vx, vy = result.get("velocity", (0.0, 0.0))
-            if raw is None or filt is None:
-                lag_x, lag_y = 0.0, 0.0
-            else:
-                lag_x = float(raw[0] - filt[0])
-                lag_y = float(raw[1] - filt[1])
-            self.uart.send(
-                "[plot,%d,%.2f,%.2f,%.1f,%.1f,%d,%d,%.3f,%d,%.2f]" % (
-                    int(self.last_dt_ms), lag_x, lag_y, vx, vy,
-                    int(result.get("miss_frames", 0)),
-                    int(result.get("relaxed_used", 0)),
-                    float(result.get("confidence", 0.0)),
-                    state_code, self.fps,
-                )
-            )
-            return
-
-        if PLOT_MODE == 2:
-            self.uart.send(
-                "[plot,%.1f,%.1f,%.1f,%.1f,%d,%d,%.1f,%.1f,%d,%.2f]" % (
-                    self.x_axis.target_hz, self.y_axis.target_hz,
-                    self.x_axis.applied_hz, self.y_axis.applied_hz,
-                    self.x_axis.direction_sign, self.y_axis.direction_sign,
-                    self.x_axis.virtual_steps, self.y_axis.virtual_steps,
-                    state_code, self.fps,
-                )
-            )
-            return
-
-        if result["center"] is None:
-            tx, ty = 0.0, 0.0
-            err_x, err_y = 0.0, 0.0
-        else:
-            tx, ty = result["center"]
-            err_x = float(tx - self.cx0)
-            err_y = float(ty - self.cy0)
-        self.uart.send(
-            "[plot,%.2f,%.2f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%d,%.2f]" % (
-                err_x, err_y,
-                self.x_axis.target_hz, self.y_axis.target_hz,
-                self.x_axis.applied_hz, self.y_axis.applied_hz,
-                tx, ty, state_code, self.fps,
-            )
-        )
 
     def send_diag(self, result):
         if not ENABLE_DIAG_PACKET or not self.uart.is_ready():
@@ -2908,29 +3246,12 @@ class K230RectangleStepperTrackerV31:
         if ticks_diff_ms(now, self.last_diag_ms) < DIAG_INTERVAL_MS:
             return
         self.last_diag_ms = now
-        raw = result.get("raw_center")
-        filt = result.get("filtered_center")
-        vx, vy = result.get("velocity", (0.0, 0.0))
+        raw = result.get('raw_center')
+        filt = result.get('filtered_center')
+        vx, vy = result.get('velocity', (0.0, 0.0))
         raw_x, raw_y = (-1.0, -1.0) if raw is None else raw
         filt_x, filt_y = (-1.0, -1.0) if filt is None else filt
-        self.uart.send(
-            "[diag,%d,%d,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.3f,"
-            "%.1f,%.1f,%.1f,%.1f,%d,%d,%.1f,%.1f,%d,%d,%d,%d,%d,%d,%d]" % (
-                now, self.last_dt_ms,
-                raw_x, raw_y, filt_x, filt_y, vx, vy,
-                float(result.get("confidence", 0.0)),
-                self.x_axis.target_hz, self.y_axis.target_hz,
-                self.x_axis.applied_hz, self.y_axis.applied_hz,
-                self.x_axis.direction_sign, self.y_axis.direction_sign,
-                self.x_axis.virtual_steps, self.y_axis.virtual_steps,
-                self.x_axis.limit_hit, self.y_axis.limit_hit,
-                int(result.get("miss_frames", 0)),
-                int(result.get("relaxed_used", 0)),
-                int(result.get("strict_miss_count", 0)),
-                int(result.get("relaxed_recover_count", 0)),
-                int(result.get("hard_miss_count", 0)),
-            )
-        )
+        self.uart.send('[diag,%d,%d,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.3f,%.1f,%.1f,%.1f,%.1f,%d,%d,%.1f,%.1f,%d,%d,%d,%d,%d,%d,%d]' % (now, self.last_dt_ms, raw_x, raw_y, filt_x, filt_y, vx, vy, float(result.get('confidence', 0.0)), self.x_axis.target_hz, self.y_axis.target_hz, self.x_axis.applied_hz, self.y_axis.applied_hz, self.x_axis.direction_sign, self.y_axis.direction_sign, self.x_axis.virtual_steps, self.y_axis.virtual_steps, self.x_axis.limit_hit, self.y_axis.limit_hit, int(result.get('miss_frames', 0)), int(result.get('relaxed_used', 0)), int(result.get('strict_miss_count', 0)), int(result.get('relaxed_recover_count', 0)), int(result.get('hard_miss_count', 0))))
 
     def send_perf(self, result):
         if not ENABLE_PERF_PACKET or not self.uart.is_ready():
@@ -2939,274 +3260,550 @@ class K230RectangleStepperTrackerV31:
         if ticks_diff_ms(now, self.last_perf_ms) < PERF_INTERVAL_MS:
             return
         self.last_perf_ms = now
-        self.uart.send(
-            "[perf,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%d]" % (
-                self.perf_capture_ms,
-                float(result.get("detect_ms", 0.0)),
-                float(result.get("associate_ms", 0.0)),
-                float(result.get("refine_ms", 0.0)),
-                self.perf_control_ms,
-                self.perf_display_ms,
-                self.perf_total_ms,
-                int(result.get("roi_area", 0)),
-                int(result.get("full_scan", 0)),
-                int(result.get("candidate_count", 0)),
-                self.state_code(result),
-            )
-        )
+        self.uart.send('[perf,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f,%d,%d,%d,%d]' % (self.perf_capture_ms, float(result.get('detect_ms', 0.0)), float(result.get('associate_ms', 0.0)), float(result.get('refine_ms', 0.0)), self.perf_control_ms, self.perf_display_ms, self.perf_total_ms, int(result.get('roi_area', 0)), int(result.get('full_scan', 0)), int(result.get('candidate_count', 0)), self.state_code(result)))
+
+    def reset_laser_control(self, clear_fault=False):
+        self.control_arm_count = 0
+        self.previous_error_norm = None
+        self.divergence_count = 0
+        self.reset_pid_memory()
+        self.filtered_err_x = None
+        self.filtered_err_y = None
+        self.filtered_rel_vx = 0.0
+        self.filtered_rel_vy = 0.0
+        self.invalid_control_frames = 0
+        self.x_precision_hold = False
+        self.y_precision_hold = False
+        self.last_x_zone = 0
+        self.last_y_zone = 0
+        self.stable_align_count = 0
+        if clear_fault:
+            self.direction_fault = False
+            self.direction_fault_reported = False
+
+    def state_code(self, result):
+        if self.direction_fault:
+            return 4
+        return self._base_state_code(result)
+
+    def _measure_error(self, result):
+        rect = result.get('center')
+        laser = self.current_laser_pos
+        if rect is None or laser is None or (not self.laser.locked):
+            return None
+        return (float(rect[0] - laser[0]), float(rect[1] - laser[1]))
+
+    def _check_divergence(self, result, err_x, err_y):
+        if not DIVERGENCE_GUARD_ENABLE:
+            return False
+        norm = math.sqrt(err_x * err_x + err_y * err_y)
+        rvx, rvy = result.get('velocity', (0.0, 0.0))
+        rect_speed = math.sqrt(rvx * rvx + rvy * rvy)
+        if self.previous_error_norm is not None:
+            grew = norm > self.previous_error_norm + DIVERGENCE_GROW_PX and norm > self.previous_error_norm * DIVERGENCE_GROW_RATIO
+            commanded = abs(self.x_axis.applied_hz) + abs(self.y_axis.applied_hz) > 40.0
+            if grew and commanded and (rect_speed < DIVERGENCE_RECT_SPEED_MAX):
+                self.divergence_count += 1
+            else:
+                self.divergence_count = max(0, self.divergence_count - 1)
+        self.previous_error_norm = norm
+        if self.divergence_count >= DIVERGENCE_LIMIT_FRAMES:
+            self.direction_fault = True
+            self.stop_motion(hard=True)
+            if not self.direction_fault_reported:
+                self.direction_fault_reported = True
+                print('DIRECTION FAULT: laser error increased; STEP output held')
+                if self.uart.is_ready():
+                    self.uart.send('[fault,direction,hold]')
+            return True
+        return False
+
+    def _pause_step_preserve_control(self):
+        """立即停止STEP，但保留PID、误差滤波和控制臂状态。"""
+        self.last_x_target_hz = 0.0
+        self.last_y_target_hz = 0.0
+        self.x_axis.hard_stop()
+        self.y_axis.hard_stop()
+
+    @staticmethod
+    def _rect_coast_scale(miss_frames):
+        miss_frames = int(miss_frames)
+        if miss_frames <= 1:
+            return float(RECT_COAST_CMD_SCALE_1)
+        if miss_frames == 2:
+            return float(RECT_COAST_CMD_SCALE_2)
+        return 0.0
+
+    def _apply_visual_edge_guard(self, x_target, y_target):
+        laser = self.current_laser_pos
+        if laser is None:
+            return (0.0, 0.0)
+        lx, ly = laser
+        if lx <= LASER_EDGE_GUARD_X_PX and x_target < 0.0:
+            x_target = 0.0
+        elif lx >= CAMERA_WIDTH - LASER_EDGE_GUARD_X_PX and x_target > 0.0:
+            x_target = 0.0
+        if ly <= LASER_EDGE_GUARD_Y_PX and y_target < 0.0:
+            y_target = 0.0
+        elif ly >= CAMERA_HEIGHT - LASER_EDGE_GUARD_Y_PX and y_target > 0.0:
+            y_target = 0.0
+        return (x_target, y_target)
+
+    def _update_auto_rebase(self, err_x, err_y, state):
+        if not AUTO_REBASE_ENABLE or state != STATE_TRACK or self.laser.last_source == 'PREDICT':
+            self.stable_align_count = 0
+            return
+        stable = abs(err_x) <= AUTO_REBASE_ERR_X_PX and abs(err_y) <= AUTO_REBASE_ERR_Y_PX and (abs(self.x_axis.applied_hz) < self.x_axis.min_hz) and (abs(self.y_axis.applied_hz) < self.y_axis.min_hz)
+        if stable:
+            self.stable_align_count += 1
+            if self.stable_align_count >= int(AUTO_REBASE_STABLE_FRAMES):
+                self.x_axis.zero_virtual_position()
+                self.y_axis.zero_virtual_position()
+                self.stable_align_count = 0
+        else:
+            self.stable_align_count = 0
+
+    def _precision_axis_target(self, axis_name, pid, error_px, velocity_px_s, dt, previous_error, axis, ff_gain, ff_limit_hz, far_cap_hz):
+        """三级增益调度 + 停止迟滞。返回STEP目标频率。"""
+        abs_error = abs(float(error_px))
+        if axis_name == 'x':
+            enter = float(PRECISION_CFG['x_stop_enter_px'])
+            exit_e = float(PRECISION_CFG['x_stop_exit_px'])
+            hold_attr = 'x_precision_hold'
+            precision_cap = float(PRECISION_CFG['x_precision_cap_hz'])
+            mid_cap = float(PRECISION_CFG['x_mid_cap_hz'])
+        else:
+            enter = float(PRECISION_CFG['y_stop_enter_px'])
+            exit_e = float(PRECISION_CFG['y_stop_exit_px'])
+            hold_attr = 'y_precision_hold'
+            precision_cap = float(PRECISION_CFG['y_precision_cap_hz'])
+            mid_cap = float(PRECISION_CFG['y_mid_cap_hz'])
+        holding = bool(getattr(self, hold_attr))
+        if holding:
+            if abs_error <= exit_e:
+                pid.reset()
+                return (0.0, 0)
+            setattr(self, hold_attr, False)
+        elif abs_error <= enter:
+            setattr(self, hold_attr, True)
+            pid.reset()
+            return (0.0, 0)
+        precision_e = float(PRECISION_CFG['precision_error_px'])
+        mid_e = float(PRECISION_CFG['mid_error_px'])
+        if abs_error <= precision_e:
+            zone = 1
+            kp_scale = float(PRECISION_CFG['near_kp_scale'])
+            kd_scale = float(PRECISION_CFG['near_kd_scale'])
+            ff_scale = float(PRECISION_CFG['near_ff_scale'])
+            zone_cap = min(precision_cap, axis.max_hz)
+        elif abs_error <= mid_e:
+            zone = 2
+            kp_scale = float(PRECISION_CFG['mid_kp_scale'])
+            kd_scale = float(PRECISION_CFG['mid_kd_scale'])
+            ff_scale = float(PRECISION_CFG['mid_ff_scale'])
+            zone_cap = min(mid_cap, axis.max_hz)
+        else:
+            zone = 3
+            kp_scale = float(PRECISION_CFG['far_kp_scale'])
+            kd_scale = float(PRECISION_CFG['far_kd_scale'])
+            ff_scale = float(PRECISION_CFG['far_ff_scale'])
+            zone_cap = min(float(far_cap_hz), axis.max_hz)
+        base_kp = pid.kp
+        base_kd = pid.kd
+        try:
+            pid.kp = base_kp * kp_scale
+            pid.kd = base_kd * kd_scale
+            target, braked = self.compute_axis_target(pid, error_px, velocity_px_s, dt, 0.0, ff_gain * ff_scale, ff_limit_hz * ff_scale, axis.min_hz, zone_cap, previous_error, zone_cap, zone_cap, zone_cap)
+        finally:
+            pid.kp = base_kp
+            pid.kd = base_kd
+        if zone == 1 and target * error_px < 0.0:
+            target = 0.0
+            pid.reset()
+        return (target, zone)
+
+    def update_tracking_control(self, result, dt):
+        """矩形TRACK/短时COAST共用的激光闭环。
+
+        v4.3的缺陷是：update_coast_control虽然调用本函数，但本函数又要求
+        state必须等于TRACK，因此全部COAST帧仍然被硬停。v4.4允许最多2帧
+        矩形预测，并允许1帧激光预测，以受限速度连续控制。
+        """
+        global LASER_X_REVERSE, LASER_Y_REVERSE
+        state = result.get('state')
+        measured = self._measure_error(result)
+        if self.estop or self.direction_fault:
+            self.control_arm_count = 0
+            self.stop_motion(hard=True)
+            return
+        valid_state = state in (STATE_TRACK, STATE_COAST)
+        if measured is None or not valid_state:
+            self.control_arm_count = 0
+            self.previous_error_norm = None
+            self.invalid_control_frames += 1
+            if self.invalid_control_frames < int(INVALID_HARD_RESET_FRAMES):
+                self._pause_step_preserve_control()
+            else:
+                self.stop_motion(hard=True)
+                self.filtered_err_x = None
+                self.filtered_err_y = None
+                self.filtered_rel_vx = 0.0
+                self.filtered_rel_vy = 0.0
+            return
+        self.invalid_control_frames = 0
+        self.control_arm_count = min(self.control_arm_count + 1, int(LASER_CONTROL_ARM_FRAMES) + 1000)
+        if self.control_arm_count < int(LASER_CONTROL_ARM_FRAMES):
+            self._pause_step_preserve_control()
+            return
+        raw_err_x, raw_err_y = measured
+        ea = float(CONTROL_ERROR_ALPHA)
+        if self.filtered_err_x is None:
+            self.filtered_err_x = raw_err_x
+            self.filtered_err_y = raw_err_y
+        else:
+            self.filtered_err_x += ea * (raw_err_x - self.filtered_err_x)
+            self.filtered_err_y += ea * (raw_err_y - self.filtered_err_y)
+        err_x = float(self.filtered_err_x)
+        err_y = float(self.filtered_err_y)
+        if self._check_divergence(result, err_x, err_y):
+            return
+        rect_vx, rect_vy = result.get('velocity', (0.0, 0.0))
+        laser_vx, laser_vy = self.laser.velocity
+        raw_rel_vx = float(rect_vx - laser_vx)
+        raw_rel_vy = float(rect_vy - laser_vy)
+        va = float(CONTROL_REL_VEL_ALPHA)
+        self.filtered_rel_vx += va * (raw_rel_vx - self.filtered_rel_vx)
+        self.filtered_rel_vy += va * (raw_rel_vy - self.filtered_rel_vy)
+        x_target, self.last_x_zone = self._precision_axis_target('x', self.x_pid, err_x, self.filtered_rel_vx, dt, self.last_err_x, self.x_axis, MOTION_CFG['x_ff'], MOTION_CFG['x_ff_limit_hz'], MOTION_CFG['x_far_cap_hz'])
+        y_target, self.last_y_zone = self._precision_axis_target('y', self.y_pid, err_y, self.filtered_rel_vy, dt, self.last_err_y, self.y_axis, MOTION_CFG['y_ff'], MOTION_CFG['y_ff_limit_hz'], MOTION_CFG['y_far_cap_hz'])
+        command_scale = 1.0
+        if state == STATE_COAST:
+            command_scale *= self._rect_coast_scale(int(result.get('miss_frames', 1)))
+        if self.laser.last_source == 'PREDICT':
+            if int(self.laser.lost_frames) <= 1:
+                command_scale *= float(LASER_COAST_CMD_SCALE_1)
+            else:
+                command_scale *= float(LASER_COAST_CMD_SCALE_2)
+        if command_scale <= 0.0:
+            self._pause_step_preserve_control()
+            return
+        x_target *= command_scale
+        y_target *= command_scale
+        if state == STATE_COAST:
+            x_target = clamp(x_target, -MOTION_CFG['x_coast_max_hz'], MOTION_CFG['x_coast_max_hz'])
+            y_target = clamp(y_target, -MOTION_CFG['y_coast_max_hz'], MOTION_CFG['y_coast_max_hz'])
+        if self.laser.last_source == 'PREDICT':
+            x_target = clamp(x_target, -LASER_PREDICT_X_CAP_HZ, LASER_PREDICT_X_CAP_HZ)
+            y_target = clamp(y_target, -LASER_PREDICT_Y_CAP_HZ, LASER_PREDICT_Y_CAP_HZ)
+        x_target, y_target = self._apply_visual_edge_guard(x_target, y_target)
+        self._update_auto_rebase(err_x, err_y, state)
+        if LASER_X_REVERSE:
+            x_target = -x_target
+        if LASER_Y_REVERSE:
+            y_target = -y_target
+        self.last_err_x = err_x
+        self.last_err_y = err_y
+        self.last_x_target_hz = self.x_axis.set_target_hz(x_target)
+        self.last_y_target_hz = self.y_axis.set_target_hz(y_target)
+        self.last_track_x_hz = self.last_x_target_hz
+        self.last_track_y_hz = self.last_y_target_hz
+        self.x_axis.update(dt)
+        self.y_axis.update(dt)
+
+    def update_coast_control(self, result, dt):
+        if not LASER_COAST_ENABLE or int(result.get('miss_frames', 0)) > int(RECT_COAST_MAX_FRAMES):
+            self.control_arm_count = 0
+            self.stop_motion(hard=True)
+            return
+        self.update_tracking_control(result, dt)
+
+    def apply_slider(self, name, raw_value):
+        global LASER_X_REVERSE, LASER_Y_REVERSE, LASER_CONTROL_ARM_FRAMES, PLOT_MODE
+        n = name.strip().lower()
+        try:
+            value = float(raw_value)
+        except Exception:
+            self.uart.send('[ack,error,bad_value,%s]' % name)
+            return
+        if n in ('laserxreverse', 'laser_x_reverse'):
+            LASER_X_REVERSE = bool(value >= 0.5)
+            self.stop_motion(hard=True)
+            self.reset_laser_control(clear_fault=True)
+            self.uart.send('[ack,slider,%s,%d]' % (name, 1 if LASER_X_REVERSE else 0))
+            return
+        if n in ('laseryreverse', 'laser_y_reverse'):
+            LASER_Y_REVERSE = bool(value >= 0.5)
+            self.stop_motion(hard=True)
+            self.reset_laser_control(clear_fault=True)
+            self.uart.send('[ack,slider,%s,%d]' % (name, 1 if LASER_Y_REVERSE else 0))
+            return
+        if n in ('clearfault', 'directionfaultreset'):
+            self.reset_laser_control(clear_fault=True)
+            self.uart.send('[ack,slider,%s,0]' % name)
+            return
+        if n in ('laseractive', 'laser_active', 'laseractivelevel'):
+            level = self.laser_output.set_active_level(value)
+            self.laser.reset()
+            self.current_laser_pos = None
+            self.control_arm_count = 0
+            self.stop_motion(hard=True)
+            self.uart.send('[ack,slider,%s,%d]' % (name, level))
+            return
+        if n in ('laseron', 'laser_on'):
+            if value >= 0.5:
+                self.laser_output.on()
+            else:
+                self.laser_output.off()
+                self.laser.reset()
+                self.current_laser_pos = None
+                self.stop_motion(hard=True)
+            self.uart.send('[ack,slider,%s,%d]' % (name, 1 if self.laser_output.enabled else 0))
+            return
+        if n in ('laserarmframes', 'laser_arm_frames'):
+            LASER_CONTROL_ARM_FRAMES = int(clamp(round(value), 1, 30))
+            self.control_arm_count = 0
+            self.uart.send('[ack,slider,%s,%d]' % (name, LASER_CONTROL_ARM_FRAMES))
+            return
+        if n in ('plotmode', 'plot_mode'):
+            PLOT_MODE = int(clamp(round(value), 0, 3))
+            self.uart.send('[plot-clear]')
+            self.uart.send('[ack,slider,%s,%d]' % (name, PLOT_MODE))
+            return
+        mapping = {'laserlmin': ('core_l_min', 0, 100), 'laserlmax': ('core_l_max', 0, 100), 'laseramin': ('core_a_min', -128, 127), 'laseramax': ('core_a_max', -128, 127), 'laserbmin': ('core_b_min', -128, 127), 'laserbmax': ('core_b_max', -128, 127), 'laserhalolmin': ('halo_l_min', 0, 100), 'laserhaloamin': ('halo_a_min', -128, 127), 'laserhalobmin': ('halo_b_min', -128, 127), 'laserminarea': ('area_min', 1, 200), 'lasermaxarea': ('area_max', 2, 1000), 'lasermindensity': ('min_density', 0.0, 1.0), 'lasermaxw': ('max_w_det', 2, 100), 'lasermaxh': ('max_h_det', 2, 100), 'lasermaxaspect': ('max_aspect', 1.0, 10.0), 'lasergate': ('gate_locked_px_det', 5, 100), 'laseracquirejump': ('acquire_jump_px_det', 2, 80), 'lasermaxcandidates': ('max_acquire_candidates', 1, 50), 'laserambiguity': ('ambiguity_margin', 0.0, 0.5), 'laserrectmargin': ('rect_roi_margin_det', 5, 160), 'laserposalpha': ('position_alpha', 0.05, 1.0), 'laservelalpha': ('velocity_alpha', 0.05, 1.0)}
+        aliases = {'laser_l_min': 'laserlmin', 'laser_l_max': 'laserlmax', 'laser_a_min': 'laseramin', 'laser_a_max': 'laseramax', 'laser_b_min': 'laserbmin', 'laser_b_max': 'laserbmax', 'laser_area_min': 'laserminarea', 'laser_area_max': 'lasermaxarea', 'laser_min_density': 'lasermindensity', 'laser_gate': 'lasergate', 'laser_acquire_jump': 'laseracquirejump', 'laser_max_candidates': 'lasermaxcandidates', 'laser_ambiguity': 'laserambiguity', 'laser_rect_margin': 'laserrectmargin'}
+        n2 = aliases.get(n, n)
+        if n2 in mapping:
+            key, low, high = mapping[n2]
+            v = clamp(value, low, high)
+            if key in ('area_min', 'area_max', 'max_acquire_candidates'):
+                v = int(round(v))
+            LASER_CFG[key] = v
+            self.laser.reset()
+            self.current_laser_pos = None
+            self.control_arm_count = 0
+            self.stop_motion(hard=True)
+            self.uart.send('[ack,slider,%s,%s]' % (name, str(v)))
+            return
+        self._apply_base_slider(name, raw_value)
+
+    def send_plot(self, result):
+        now = time.ticks_ms()
+        if ticks_diff_ms(now, self.last_plot_ms) < PLOT_INTERVAL_MS:
+            return
+        self.last_plot_ms = now
+        state_code = self.state_code(result)
+        rect = result.get('center')
+        laser = self.current_laser_pos
+        if rect is None or laser is None:
+            raw_err_x = raw_err_y = 0.0
+            rect_x = rect_y = 0.0
+        else:
+            rect_x, rect_y = rect
+            raw_err_x = float(rect_x - laser[0])
+            raw_err_y = float(rect_y - laser[1])
+        if PLOT_MODE == 1:
+            source_code = {'NONE': 0, 'CORE': 1, 'HALO': 2, 'PREDICT': 3}.get(str(self.laser.last_source), 0)
+            self.uart.send('[plot,%d,%d,%d,%d,%d,%.3f,%d,%d,%d,%.2f]' % (int(self.last_dt_ms), int(result.get('miss_frames', 0)), int(self.laser.lost_frames), int(self.laser.raw_blob_count), int(self.laser.candidate_count), float(self.laser.confidence), int(source_code), int(self.control_arm_count), int(state_code), self.fps))
+            return
+        if PLOT_MODE == 2:
+            self.uart.send('[plot,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%d,%d,%d,%.2f]' % (self.x_axis.target_hz, self.y_axis.target_hz, self.x_axis.applied_hz, self.y_axis.applied_hz, self.x_axis.virtual_steps, self.y_axis.virtual_steps, int(self.x_axis.limit_hit), int(self.y_axis.limit_hit), int(state_code), self.fps))
+            return
+        if PLOT_MODE == 3:
+            filt_x = raw_err_x if self.filtered_err_x is None else self.filtered_err_x
+            filt_y = raw_err_y if self.filtered_err_y is None else self.filtered_err_y
+            source_code = {'NONE': 0, 'CORE': 1, 'HALO': 2, 'PREDICT': 3}.get(str(self.laser.last_source), 0)
+            self.uart.send('[plot,%.2f,%.2f,%.2f,%.2f,%.1f,%.1f,%.3f,%d,%d,%.2f]' % (raw_err_x, raw_err_y, float(filt_x), float(filt_y), float(self.filtered_rel_vx), float(self.filtered_rel_vy), float(self.laser.confidence), int(source_code), int(state_code), self.fps))
+            return
+        self.uart.send('[plot,%.2f,%.2f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%d,%.2f]' % (raw_err_x, raw_err_y, self.x_axis.target_hz, self.y_axis.target_hz, self.x_axis.applied_hz, self.y_axis.applied_hz, rect_x, rect_y, state_code, self.fps))
+
+    def send_laser_packet(self):
+        if not self.uart.is_ready():
+            return
+        now = time.ticks_ms()
+        if ticks_diff_ms(now, self.last_laser_packet_ms) < LASER_PACKET_INTERVAL_MS:
+            return
+        self.last_laser_packet_ms = now
+        if self.current_laser_pos is None:
+            lx = ly = -1.0
+        else:
+            lx, ly = self.current_laser_pos
+        vx, vy = self.laser.velocity
+        self.uart.send('[laser,%.2f,%.2f,%.2f,%.2f,%.3f,%d,%.1f,%.3f,%d,%d]' % (lx, ly, vx, vy, self.laser.confidence, self.laser.candidate_count, self.laser.last_area, self.laser.last_density, self.laser.lost_frames, 1 if self.laser_output.enabled else 0))
 
     def draw(self, img, result):
-        cx_det = int(round(logical_to_detect_x(self.cx0)))
-        cy_det = int(round(logical_to_detect_y(self.cy0)))
-        img.draw_line(cx_det - 10, cy_det, cx_det + 10, cy_det,
-                      color=(0, 80, 255), thickness=1)
-        img.draw_line(cx_det, cy_det - 10, cx_det, cy_det + 10,
-                      color=(0, 80, 255), thickness=1)
-
-        roi = result.get("roi")
-        if roi is not None and not result.get("full_scan", 0):
-            img.draw_rectangle(
-                int(roi[0]), int(roi[1]), int(roi[2]), int(roi[3]),
-                color=(80, 80, 255), thickness=1,
-            )
-
-        corners_det = result.get("corners_det")
-        color = (
-            (0, 255, 0)
-            if result["state"] == STATE_TRACK
-            else (255, 180, 0)
-        )
-        if corners_det is not None:
-            pts = [(int(round(p[0])), int(round(p[1]))) for p in order_corners(corners_det)]
+        for c in (result.get('candidates') or [])[:12]:
+            try:
+                x, y, w, h = c['box_det']
+                img.draw_rectangle(int(x), int(y), int(w), int(h), color=(40, 120, 255), thickness=1)
+            except Exception:
+                pass
+        state_color = {STATE_TRACK: (0, 255, 0), STATE_ACQUIRE: (255, 255, 0), STATE_COAST: (255, 140, 0), STATE_LOST: (255, 0, 0), STATE_SEARCH: (255, 0, 0)}.get(result.get('state'), (255, 255, 0))
+        corners = result.get('corners_det')
+        if corners is not None:
+            pts = [(int(round(p[0])), int(round(p[1]))) for p in order_corners(corners)]
             for i in range(4):
                 x0, y0 = pts[i]
                 x1, y1 = pts[(i + 1) % 4]
-                img.draw_line(x0, y0, x1, y1, color=color, thickness=2)
-            for p in pts:
-                img.draw_circle(p[0], p[1], 2, color=(255, 255, 0), thickness=1)
+                img.draw_line(x0, y0, x1, y1, color=state_color, thickness=2)
+            for px, py in pts:
+                img.draw_circle(px, py, 2, color=(0, 255, 255), thickness=1)
+        elif result.get('box_det') is not None:
+            x, y, w, h = result['box_det']
+            img.draw_rectangle(int(x), int(y), int(w), int(h), color=state_color, thickness=2)
+        cx_det = int(round(logical_to_detect_x(self.cx0)))
+        cy_det = int(round(logical_to_detect_y(self.cy0)))
+        img.draw_cross(cx_det, cy_det, color=(0, 80, 255), size=6, thickness=1)
+        rect = result.get('center')
+        laser = self.current_laser_pos
+        rect_det = None
+        laser_det = None
+        if rect is not None:
+            rect_det = (int(round(logical_to_detect_x(rect[0]))), int(round(logical_to_detect_y(rect[1]))))
+            img.draw_cross(rect_det[0], rect_det[1], color=(0, 255, 0), size=7, thickness=2)
+        for cand in self.laser.last_candidates_det[:8]:
+            cx_c = int(round(cand[0]))
+            cy_c = int(round(cand[1]))
+            img.draw_circle(cx_c, cy_c, 4, color=(255, 120, 0), thickness=1)
+        if laser is not None:
+            laser_det = (int(round(logical_to_detect_x(laser[0]))), int(round(logical_to_detect_y(laser[1]))))
+            img.draw_cross(laser_det[0], laser_det[1], color=(255, 0, 0), size=7, thickness=2)
+        if rect_det is not None and laser_det is not None:
+            img.draw_line(laser_det[0], laser_det[1], rect_det[0], rect_det[1], color=(255, 0, 255), thickness=1)
+        err = self._measure_error(result)
+        if err is None:
+            ex = ey = 0.0
         else:
-            box_det = result.get("box_det")
-            if box_det is not None:
-                x, y, w, h = [int(v) for v in box_det]
-                img.draw_rectangle(x, y, w, h, color=color, thickness=2)
-
-        if result["center"] is not None:
-            tx, ty = result["center"]
-            tx_det = int(round(logical_to_detect_x(tx)))
-            ty_det = int(round(logical_to_detect_y(ty)))
-            img.draw_cross(
-                tx_det, ty_det, color=(255, 0, 0), size=5, thickness=1
-            )
-            img.draw_line(
-                cx_det, cy_det, tx_det, ty_det,
-                color=(255, 80, 80), thickness=1,
-            )
-
-        img.draw_string_advanced(
-            4, 4, 14,
-            "%s/%s %.1ffps" % (
-                STATE_NAME[result["state"]], result["source"], self.fps
-            ),
-            color=(255, 255, 255),
-        )
-        img.draw_string_advanced(
-            4, 21, 13,
-            "ROI=%d%% det=%.1fms cand=%d" % (
-                int(100.0 * result.get("roi_area", 0)
-                    / float(DETECT_WIDTH * DETECT_HEIGHT)),
-                float(result.get("detect_ms", 0.0)),
-                int(result.get("candidate_count", 0)),
-            ),
-            color=(255, 255, 255),
-        )
-        img.draw_string_advanced(
-            4, 38, 13,
-            "X %.0f/%.0f Y %.0f/%.0fHz" % (
-                self.x_axis.target_hz, self.x_axis.applied_hz,
-                self.y_axis.target_hz, self.y_axis.applied_hz,
-            ),
-            color=(255, 255, 255),
-        )
-        if self.estop:
-            img.draw_string_advanced(4, 56, 18, "ESTOP", color=(255, 0, 0))
-        elif not self.tracking_enabled:
-            img.draw_string_advanced(
-                4, 56, 16, "TRACKING STOPPED", color=(255, 180, 0)
-            )
+            ex, ey = err
+        arm = min(self.control_arm_count, int(LASER_CONTROL_ARM_FRAMES))
+        fault = ' DIR_FAULT' if self.direction_fault else ''
+        line1 = '%s R=%d L=%d/%d ARM=%d/%d%s' % (STATE_NAME[result.get('state', STATE_SEARCH)], 1 if rect is not None else 0, 1 if laser is not None else 0, 1 if self.laser.locked else 0, arm, int(LASER_CONTROL_ARM_FRAMES), fault)
+        line2 = 'e=(%.0f,%.0f) Hz=(%.0f,%.0f) Z=%d/%d RC=%d LC=%d/%d A=%d IO=%d/%d fps=%.1f' % (ex, ey, self.x_axis.applied_hz, self.y_axis.applied_hz, int(self.last_x_zone), int(self.last_y_zone), int(result.get('candidate_count', 0)), int(self.laser.candidate_count), int(self.laser.raw_blob_count), int(self.laser.ambiguous), 1 if self.laser_output.enabled else 0, int(self.laser_output.active_level), self.fps)
+        try:
+            img.draw_string_advanced(2, 2, 13, line1, color=(255, 255, 255))
+            img.draw_string_advanced(2, 18, 13, line2, color=(255, 255, 255))
+        except Exception:
+            pass
 
     def print_status(self, result):
         now = time.ticks_ms()
         if ticks_diff_ms(now, self.last_status_ms) < STATUS_INTERVAL_MS:
             return
         self.last_status_ms = now
-        if result["center"] is None:
-            print(
-                "STAT state=%s found=0 cand=%d det=%.1fms roi=%d%% full=%d "
-                "hz=(%.0f,%.0f) steps=(%.0f,%.0f) limit=(%d,%d) fps=%.1f" % (
-                    STATE_NAME[result["state"]],
-                    int(result.get("candidate_count", 0)),
-                    float(result.get("detect_ms", 0.0)),
-                    int(
-                        100.0 * result.get("roi_area", 0)
-                        / float(DETECT_WIDTH * DETECT_HEIGHT)
-                    ),
-                    int(result.get("full_scan", 0)),
-                    self.x_axis.applied_hz, self.y_axis.applied_hz,
-                    self.x_axis.virtual_steps, self.y_axis.virtual_steps,
-                    self.x_axis.limit_hit, self.y_axis.limit_hit,
-                    self.fps,
-                )
-            )
+        rect = result.get('center')
+        laser = self.current_laser_pos
+        if rect is None or laser is None:
+            print('STAT state=%s rect=%d laser=%d rectCand=%d laserCand=%d/%d core=%d halo=%d amb=%d arm=%d/%d outHz=(%.0f,%.0f) io=%d/A%d ferr=%d fps=%.1f' % (STATE_NAME[result.get('state', STATE_SEARCH)], 1 if rect is not None else 0, 1 if laser is not None else 0, int(result.get('candidate_count', 0)), int(self.laser.candidate_count), int(self.laser.raw_blob_count), int(self.laser.core_blob_count), int(self.laser.halo_blob_count), int(self.laser.ambiguous), self.control_arm_count, int(LASER_CONTROL_ARM_FRAMES), self.x_axis.applied_hz, self.y_axis.applied_hz, 1 if self.laser_output.enabled else 0, int(self.laser_output.active_level), int(self.laser.find_error_count), self.fps))
         else:
-            tx, ty = result["center"]
-            vx, vy = result["velocity"]
-            print(
-                "STAT state=%s src=%s err=(%d,%d) vel=(%.0f,%.0f) "
-                "targetHz=(%.0f,%.0f) outHz=(%.0f,%.0f) steps=(%.0f,%.0f) limit=(%d,%d) fps=%.1f" % (
-                    STATE_NAME[result["state"]], result["source"],
-                    tx - self.cx0, ty - self.cy0, vx, vy,
-                    self.x_axis.target_hz, self.y_axis.target_hz,
-                    self.x_axis.applied_hz, self.y_axis.applied_hz,
-                    self.x_axis.virtual_steps, self.y_axis.virtual_steps,
-                    self.x_axis.limit_hit, self.y_axis.limit_hit,
-                    self.fps,
-                )
-            )
+            print('STAT state=%s err=(%.1f,%.1f) rect=(%.1f,%.1f) laser=(%.1f,%.1f) rectCand=%d laserCand=%d/%d src=%s amb=%d arm=%d/%d outHz=(%.0f,%.0f) io=%d/A%d fps=%.1f' % (STATE_NAME[result.get('state', STATE_SEARCH)], rect[0] - laser[0], rect[1] - laser[1], rect[0], rect[1], laser[0], laser[1], int(result.get('candidate_count', 0)), int(self.laser.candidate_count), int(self.laser.raw_blob_count), str(self.laser.last_source), int(self.laser.ambiguous), self.control_arm_count, int(LASER_CONTROL_ARM_FRAMES), self.x_axis.applied_hz, self.y_axis.applied_hz, 1 if self.laser_output.enabled else 0, int(self.laser_output.active_level), self.fps))
+
+    def startup_motor_self_test(self):
+        """仅由串口 [motor,test] 触发，不在程序启动时自动运动。"""
+        print('--- D36A manual motor self-test begin ---')
+        sequence = (('X+', self.x_axis, +SELF_TEST_HZ), ('X-', self.x_axis, -SELF_TEST_HZ), ('Y+', self.y_axis, +SELF_TEST_HZ), ('Y-', self.y_axis, -SELF_TEST_HZ))
+        for label, axis, hz in sequence:
+            print('SELFTEST %s %.0fHz %dms' % (label, hz, SELF_TEST_RUN_MS))
+            self._jog_axis_blocking(axis, hz, SELF_TEST_RUN_MS)
+        self.stop_motion(hard=True)
+        self.x_axis.zero_virtual_position()
+        self.y_axis.zero_virtual_position()
+        self.reset_laser_control(clear_fault=True)
+        print('--- D36A manual motor self-test end ---')
 
     def run(self):
         sensor = None
         display_ok = False
         try:
-            print("=" * 76)
-            print("K230 D36A RECTANGLE STEPPER TRACKER V3.6 FINAL-RECT")
-            print("Vision: 320x240 RGB888; UART/PID logical coordinates: 640x480")
-            print("Detector: cv_lite ROI + stricter two-stage association + corner polygon draw")
-            print("EN1/EN2 tied to D36A board 5V; GPIO35 unused")
-            print("=" * 76)
-            self.startup_motor_self_test()
-
+            print('=' * 78)
+            print('K230 D36A LASER-RECT TRACKER V5.2 TRACKING TUNE')
+            print('Closed loop: rectangle center - laser center')
+            print('X STEP/DIR GPIO42/26; Y STEP/DIR GPIO43/34')
+            print('UART3 GPIO32/33; laser TTL GPIO35')
+            print('D36A EN1/EN2 must remain tied to D36A board 5V')
+            print('Single controller: rectangle tracker + laser tracker + D36A closed loop\nTuning: faster response, stronger tracking output, balanced precision')
+            print('=' * 78)
+            print('Startup motor self-test disabled; use [motor,test] manually')
             try:
-                sensor = Sensor(
-                    id=SENSOR_ID,
-                    width=SENSOR_INPUT_WIDTH,
-                    height=SENSOR_INPUT_HEIGHT,
-                    fps=SENSOR_FPS,
-                )
+                sensor = Sensor(id=SENSOR_ID, width=SENSOR_INPUT_WIDTH, height=SENSOR_INPUT_HEIGHT, fps=SENSOR_FPS)
             except Exception:
                 sensor = Sensor()
-
             sensor.reset()
-            sensor.set_framesize(width=DETECT_WIDTH, height=DETECT_HEIGHT)
-            sensor.set_pixformat(Sensor.RGB888)
-
+            sensor.set_framesize(width=DETECT_WIDTH, height=DETECT_HEIGHT, chn=RECT_CHANNEL)
+            sensor.set_pixformat(Sensor.RGB888, chn=RECT_CHANNEL)
+            sensor.set_framesize(width=DETECT_WIDTH, height=DETECT_HEIGHT, chn=LASER_CHANNEL)
+            sensor.set_pixformat(Sensor.RGB565, chn=LASER_CHANNEL)
             if ENABLE_DISPLAY:
-                # ST7701不支持320x240。优先使用IDE虚拟显示；
-                # 若固件不支持VIRT，再退回ST7701固定800x480模式。
-                try:
-                    Display.init(
-                        Display.VIRT,
-                        width=DETECT_WIDTH,
-                        height=DETECT_HEIGHT,
-                        fps=60,
-                        to_ide=True,
-                    )
-                    display_ok = True
-                    print("Display ready: VIRT %dx%d to IDE" % (
-                        DETECT_WIDTH, DETECT_HEIGHT
-                    ))
-                except Exception as virt_e:
-                    try:
-                        Display.init(
-                            Display.ST7701,
-                            width=800,
-                            height=480,
-                            to_ide=True,
-                            quality=DISPLAY_QUALITY,
-                        )
-                        display_ok = True
-                        print("Display ready: ST7701 800x480")
-                    except Exception as lcd_e:
-                        print(
-                            "Display init failed: VIRT=%s; ST7701=%s"
-                            % (virt_e, lcd_e)
-                        )
-                        display_ok = False
-
+                Display.init(Display.ST7701, width=640, height=480, to_ide=True, quality=DISPLAY_QUALITY)
+                display_ok = True
+                print('Display ready: ST7701 640x480; image centered; IDE mirror ON')
             MediaManager.init()
             sensor.run()
-            time.sleep_ms(500)
-
-            print("=" * 76)
-            print("K230 D36A rectangle tracker v3.6 FINAL-RECT started")
-            print("Vision RGB888 detect=%dx%d logical=%dx%d refine=%s" % (
-                DETECT_WIDTH, DETECT_HEIGHT,
-                CAMERA_WIDTH, CAMERA_HEIGHT,
-                str(CV2_REFINE_AVAILABLE and RECT_CFG["corner_refine_enable"]),
-            ))
-            print("X: STEP GPIO%d DIR GPIO%d; Y: STEP GPIO%d DIR GPIO%d" % (
-                X_STEP_PIN, X_DIR_PIN, Y_STEP_PIN, Y_DIR_PIN
-            ))
-            print("UART: GPIO32 TX / GPIO33 RX, 115200 8N1")
-            print("EN1/EN2: tied to D36A board 5V; GPIO35 unused")
-            print("Plot packet remains 10 channels in 640x480 logical coordinates")
-            print("Perf packet: capture/detect/associate/refine/control/display/total")
-            print("=" * 76)
-
+            time.sleep_ms(300)
+            print("Camera channels ready")
+            for _ in range(30):
+                os.exitpoint()
+                try:
+                    sensor.snapshot(chn=RECT_CHANNEL)
+                except Exception:
+                    pass
+                try:
+                    sensor.snapshot(chn=LASER_CHANNEL)
+                except Exception:
+                    pass
+                time.sleep_ms(10)
+            if LASER_AUTO_ON_AFTER_CAMERA:
+                self.laser_output.on()
+                print('Camera ready; RECT ch%d RGB888 + LASER ch%d RGB565; laser GPIO35 ON; searching rectangle and laser' % (RECT_CHANNEL, LASER_CHANNEL))
             if self.uart.is_ready():
-                self.uart.send_display_help()
-                self.uart.send("[system,ready,k230_d36a_stepper_v3_1_compat_hybrid]")
-
+                self.uart.send('[system,ready,k230_d36a_laser_rect_v5_optimized]')
+                self.uart.send('[display,8,8,CH1/2 rect-laser error; CH3/4 target Hz; CH5/6 output Hz,14]')
+                self.uart.send('[display,8,26,plotMode0 control; 1 loss/source; 2 stepper; 3 filter,14]')
             frame_count = 0
+            display_x = int((640 - DETECT_WIDTH) / 2)
+            display_y = int((480 - DETECT_HEIGHT) / 2)
             while True:
                 os.exitpoint()
                 loop_start_us = time.ticks_us()
                 now, dt = self.update_time()
-
                 capture_start_us = time.ticks_us()
-                img = sensor.snapshot()
-                self.perf_capture_ms = perf_ms(capture_start_us)
-
+                if not getattr(sensor, 'run', None):
+                    continue
+                img = sensor.snapshot(chn=RECT_CHANNEL)
                 img_np = img.to_numpy_ref()
-                self.last_img_np = img_np
                 result = self.tracker.step(img, img_np, dt)
-
+                laser_img = sensor.snapshot(chn=LASER_CHANNEL)
+                laser_np = laser_img.to_numpy_ref()
+                self.perf_capture_ms = perf_ms(capture_start_us)
+                if self.laser_output.enabled:
+                    self.current_laser_pos = self.laser.detect(laser_img, laser_np, result.get('box_det'), result.get('center'), dt)
+                else:
+                    self.laser.reset()
+                    self.current_laser_pos = None
                 control_start_us = time.ticks_us()
-                if self.tracking_enabled and not self.estop:
-                    if (
-                        result["state"] == STATE_TRACK
-                        and result["center"] is not None
-                    ):
+                if self.tracking_enabled and (not self.estop) and (not self.direction_fault):
+                    if result.get('state') == STATE_TRACK:
                         self.update_tracking_control(result, dt)
-                    elif (
-                        result["state"] == STATE_COAST
-                        and result["center"] is not None
-                    ):
+                    elif result.get('state') == STATE_COAST:
                         self.update_coast_control(result, dt)
                     else:
+                        self.control_arm_count = 0
                         self.stop_motion(hard=True)
                 else:
                     self.stop_motion(hard=True)
                 self.perf_control_ms = perf_ms(control_start_us)
-
                 self.handle_uart()
                 self.send_plot(result)
+                self.send_laser_packet()
                 self.send_diag(result)
                 self.print_status(result)
-
                 self.perf_display_ms = 0.0
                 frame_count += 1
-                if (
-                    display_ok
-                    and frame_count % max(1, DISPLAY_EVERY_N_FRAMES) == 0
-                ):
+                if display_ok and frame_count % max(1, DISPLAY_EVERY_N_FRAMES) == 0:
                     display_start_us = time.ticks_us()
                     self.draw(img, result)
-                    Display.show_image(img)
+                    Display.show_image(img, x=display_x, y=display_y)
                     self.perf_display_ms = perf_ms(display_start_us)
-
                 self.perf_total_ms = perf_ms(loop_start_us)
                 self.send_perf(result)
-
                 if frame_count % GC_CHECK_INTERVAL_FRAMES == 0:
                     try:
                         if gc.mem_free() < GC_FREE_THRESHOLD:
@@ -3214,16 +3811,17 @@ class K230RectangleStepperTrackerV31:
                     except Exception:
                         gc.collect()
                 time.sleep_ms(1)
-
         except KeyboardInterrupt:
-            print("user stop")
+            print('user stop')
         except BaseException as e:
-            print("Exception:", e)
+            print('Exception:', e)
             try:
                 sys.print_exception(e)
             except Exception:
                 pass
         finally:
+            self.stop_motion(hard=True)
+            self.laser_output.off()
             self.emergency_stop()
             if isinstance(sensor, Sensor):
                 try:
@@ -3248,11 +3846,7 @@ class K230RectangleStepperTrackerV31:
             self.x_axis.deinit()
             self.y_axis.deinit()
             self.common_enable.deinit()
-            print(
-                "program exited; STEP PWM disabled; "
-                "D36A remains hardware-enabled by EN=5V"
-            )
-
-
+            self.laser_output.deinit()
+            print('program exited; STEP PWM 0; laser GPIO35 OFF')
 if __name__ == "__main__":
-    K230RectangleStepperTrackerV31().run()
+    K230D36ALaserRectTrackerV5().run()
