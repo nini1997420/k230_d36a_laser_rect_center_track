@@ -110,9 +110,6 @@ class UARTLink:
     def send_digit(self, digit):
         return self._send("[num,%d]" % int(digit))
 
-    def send_confirmed(self, digit):
-        return self._send("[num,confirmed,%d]" % int(digit))
-
     def send_locked(self):
         return self._send("[num,locked]")
 
@@ -484,9 +481,7 @@ def uart_handshake(pl, link, digit):
             print("RX:", packet)
             if matching_ack(parts, digit):
                 print("RX VERIFIED:", packet)
-                if link.send_confirmed(digit):
-                    if not link.send_locked():
-                        continue
+                if link.send_locked():
                     pl.osd_img.draw_string_advanced(
                         8,
                         205,
