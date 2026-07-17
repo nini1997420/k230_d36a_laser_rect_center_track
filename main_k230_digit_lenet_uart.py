@@ -113,6 +113,9 @@ class UARTLink:
     def send_confirmed(self, digit):
         return self._send("[num,confirmed,%d]" % int(digit))
 
+    def send_locked(self):
+        return self._send("[num,locked]")
+
     def read_packets(self):
         packets = []
         if self.uart is None:
@@ -359,6 +362,9 @@ class FourFrameConfirmer:
     def status(self):
         return "CONFIRM FRAME %d/%d" % (len(self.history), CONFIRM_FRAMES)
 
+    def reset(self):
+        self.history = []
+
 
 def display_x(pl, x):
     return int(x * pl.display_size[0] / AI_W)
@@ -456,6 +462,14 @@ def matching_ack(parts, digit):
     return False
 
 
+def matching_unlock(parts):
+    return (
+        len(parts) == 2
+        and str(parts[0]).lower() == "num"
+        and str(parts[1]).lower() == "unlock"
+    )
+
+
 def uart_handshake(pl, link, digit):
     attempts = 0
     last_send = 0
@@ -471,11 +485,13 @@ def uart_handshake(pl, link, digit):
             if matching_ack(parts, digit):
                 print("RX VERIFIED:", packet)
                 if link.send_confirmed(digit):
+                    if not link.send_locked():
+                        continue
                     pl.osd_img.draw_string_advanced(
                         8,
                         205,
                         28,
-                        "HANDSHAKE COMPLETE %d" % digit,
+                        "LOCKED %d - WAIT UNLOCK" % digit,
                         color=(255, 0, 255, 0),
                     )
                     pl.show_image()
@@ -493,6 +509,8 @@ def main():
     confirmer = FourFrameConfirmer()
     recognizer = None
     frame_index = 0
+    detection_enabled = True
+    locked_digit = None
 
     try:
         pl = PipeLine(
@@ -516,6 +534,21 @@ def main():
         print("================================================")
 
         while True:
+            if not detection_enabled:
+                for parts in link.read_packets():
+                    packet = "[" + ",".join(parts) + "]"
+                    print("RX WHILE LOCKED:", packet)
+                    if matching_unlock(parts):
+                        detection_enabled = True
+                        locked_digit = None
+                        confirmer.reset()
+                        print("UNLOCK VERIFIED: detection enabled")
+                        break
+                if not detection_enabled:
+                    time.sleep_ms(HANDSHAKE_POLL_MS)
+                    gc.collect()
+                    continue
+
             frame_index += 1
             frame = pl.get_frame()
             if frame is None:
@@ -582,7 +615,13 @@ def main():
             if confirmed is not None:
                 print("DIGIT CONFIRMED AND LOCKED:", confirmed)
                 if uart_handshake(pl, link, confirmed):
-                    break
+                    locked_digit = confirmed
+                    detection_enabled = False
+                    confirmer.reset()
+                    print(
+                        "DETECTION DISABLED: locked digit=%d; waiting for [num,unlock]"
+                        % locked_digit
+                    )
             gc.collect()
 
     except KeyboardInterrupt:
