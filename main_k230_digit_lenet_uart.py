@@ -641,6 +641,7 @@ def main():
         link.close()
         gc.collect()
         print("Program exited")
+        #66666666
 
 
 if __name__ == "__main__":
