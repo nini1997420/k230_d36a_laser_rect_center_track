@@ -10,14 +10,15 @@
 
 本程序不初始化 D36A，不输出 STEP/DIR，不运行 PD、Ramp、虚拟位置或软件限位。
 
-唯一高频串口帧（同时也是调参网页能直接绘制的 plot 帧）：
-    [plot,rect_x,rect_y,laser_x,laser_y,valid_flags]
+唯一高频串口帧为下位机 app_aim_protocol.c 实际接收的22字节二进制帧：
+    AA 55 01 01 | sequence(u16 LE) | capture_ms(u32 LE)
+    | rect_x(u16 LE) | rect_y(u16 LE) | laser_x(u16 LE) | laser_y(u16 LE)
+    | valid_flags(u8) | tracking_state(u8) | crc16(u16 LE)
 
 字段说明：
     坐标使用 640x480 逻辑坐标；无效坐标为 65535。
     valid_flags bit0=矩形坐标可用，bit1=激光坐标可用，
-                bit2=目标均已锁定，bit3=本包可用于控制，
-                bit4=矩形坐标复用，bit5=激光坐标复用。
+                bit2=目标均已锁定，bit3=测量仍在新鲜时限内；bit4~7固定为0。
 本文件包含全部运行依赖，上传这一个 .py 文件即可。
 """
 
@@ -68,10 +69,10 @@ ENABLE_UART = True
 UART_ID = 3
 UART_TX_PIN = 32
 UART_RX_PIN = 33
-UART_BAUD = 921600                    # 90 Hz文本包必须提高波特率
+UART_BAUD = 460800                    # MSPM0 UART0必须同步配置为460800 8N1
 
-# 921600 baud足以承载每个视觉循环一个plot包。双通道取帧会产生长短循环，
-# 不能再使用毫秒门限，否则短循环会被主动漏发，导致TX明显低于FPS。
+# 22字节二进制帧在460800 baud下可显著缩短阻塞发送时间。双通道取帧会产生
+# 长短循环，不能使用毫秒门限，否则短循环会被主动漏发，导致TX低于FPS。
 PLOT_INTERVAL_MS = 0
 GC_CHECK_INTERVAL_FRAMES = 120
 GC_FREE_THRESHOLD = 180000
@@ -84,6 +85,14 @@ INVALID_COORD = 65535
 RECT_FRESH_MAX_AGE_MS = 70
 LASER_FRESH_MAX_AGE_MS = 35
 HOLD_MAX_AGE_MS = 220
+
+# MSPM0 App/app_aim_protocol.h 当前实际协议（不是README中的旧24字节草案）。
+AIM_FRAME_SIZE = 22
+AIM_CRC_DATA_SIZE = 20
+AIM_HEADER0 = 0xAA
+AIM_HEADER1 = 0x55
+AIM_PROTOCOL_VERSION = 0x01
+AIM_MSG_VISION_OBSERVATION = 0x01
 
 LASER_IO_PIN = 35
 LASER_ACTIVE_LEVEL = 1
@@ -102,6 +111,43 @@ def ticks_diff_ms(now, old):
 
 def perf_ms(start_us):
     return time.ticks_diff(time.ticks_us(), start_us) / 1000.0
+
+
+def make_crc16_ccitt_false_table():
+    table = []
+    for value in range(256):
+        crc = value << 8
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = ((crc << 1) ^ 0x1021) & 0xFFFF
+            else:
+                crc = (crc << 1) & 0xFFFF
+        table.append(crc)
+    return tuple(table)
+
+
+CRC16_CCITT_FALSE_TABLE = make_crc16_ccitt_false_table()
+
+
+def crc16_ccitt_false(data, length):
+    crc = 0xFFFF
+    for index in range(int(length)):
+        crc = ((crc << 8) ^ CRC16_CCITT_FALSE_TABLE[((crc >> 8) ^ data[index]) & 0xFF]) & 0xFFFF
+    return crc
+
+
+def write_le16(buffer, offset, value):
+    value = int(value) & 0xFFFF
+    buffer[offset] = value & 0xFF
+    buffer[offset + 1] = (value >> 8) & 0xFF
+
+
+def write_le32(buffer, offset, value):
+    value = int(value) & 0xFFFFFFFF
+    buffer[offset] = value & 0xFF
+    buffer[offset + 1] = (value >> 8) & 0xFF
+    buffer[offset + 2] = (value >> 16) & 0xFF
+    buffer[offset + 3] = (value >> 24) & 0xFF
 
 
 def clamp_int(value, low, high):
@@ -366,6 +412,17 @@ class UARTLink:
             return True
         except Exception as e:
             print("UART write failed:", e)
+            return False
+
+    def send_binary(self, frame):
+        if self.uart is None:
+            return False
+        try:
+            self.uart.write(frame)
+            self.tx_packets += 1
+            return True
+        except Exception as e:
+            print("UART binary write failed:", e)
             return False
 
     def read_packets(self, max_packets=6):
@@ -839,6 +896,7 @@ class PlanBVisionNode:
 
         now = time.ticks_ms()
         self.sequence = 0
+        self.tx_frame = bytearray(AIM_FRAME_SIZE)
         self.frame_count = 0
         self.rect_frame_count = 0
         self.last_frame_ms = now
@@ -912,10 +970,7 @@ class PlanBVisionNode:
             flags |= 0x04
         if both_fresh:
             flags |= 0x08
-        if self.rect_fresh and not self.rect_measured:
-            flags |= 0x10
-        if self.laser_fresh and not self.laser_measured:
-            flags |= 0x20
+        # bit4~7在MSPM0中是保留位；任一置1都会导致整帧被拒收。
         self.valid_flags = flags
 
         laser_age = ticks_diff_ms(now, self.laser.last_ms)
@@ -933,7 +988,7 @@ class PlanBVisionNode:
         else:
             self.state = 0
 
-    def _make_plot_packet(self):
+    def _build_aim_frame(self, capture_ms):
         rect_position = self.rect_result.get("center") if self.rect_result else None
         laser_position = self.laser_position
 
@@ -942,24 +997,32 @@ class PlanBVisionNode:
         laser_x = coord_or_invalid(laser_position, 0, self.laser_fresh)
         laser_y = coord_or_invalid(laser_position, 1, self.laser_fresh)
 
-        # 下位机控制只需要坐标和有效位。删除置信度、状态、序号和FPS，
-        # 减少MicroPython字符串格式化以及UART占线时间。
-        return "[plot,%d,%d,%d,%d,%d]" % (
-            rect_x,
-            rect_y,
-            laser_x,
-            laser_y,
-            self.valid_flags,
-        )
+        frame = self.tx_frame
+        frame[0] = AIM_HEADER0
+        frame[1] = AIM_HEADER1
+        frame[2] = AIM_PROTOCOL_VERSION
+        frame[3] = AIM_MSG_VISION_OBSERVATION
+        write_le16(frame, 4, self.sequence)
+        write_le32(frame, 6, capture_ms)
+        write_le16(frame, 10, rect_x)
+        write_le16(frame, 12, rect_y)
+        write_le16(frame, 14, laser_x)
+        write_le16(frame, 16, laser_y)
+        frame[18] = self.valid_flags & 0x0F
+        frame[19] = self.state & 0xFF
+        crc = crc16_ccitt_false(frame, AIM_CRC_DATA_SIZE)
+        write_le16(frame, 20, crc)
+        return frame
 
-    def send_observation(self, now):
+    def send_observation(self, now, capture_ms):
         # 每个融合结果恰好发送一次；控制端需要的是最新观测，而不是定时抽样。
         self.last_plot_ms = now
+        self.sequence = (self.sequence + 1) & 0xFFFF
         start_us = time.ticks_us()
-        packet = self._make_plot_packet()
+        packet = self._build_aim_frame(capture_ms)
         self.packet_ms = perf_ms(start_us)
         start_us = time.ticks_us()
-        self.uart.send(packet)
+        self.uart.send_binary(packet)
         self.uart_ms = perf_ms(start_us)
 
         if self.last_send_ms is not None:
@@ -1084,6 +1147,7 @@ class PlanBVisionNode:
                 os.exitpoint()
                 loop_start_us = time.ticks_us()
                 now = time.ticks_ms()
+                capture_ms = now
                 frame_dt = self._update_fps(now)
 
                 rect_slot = (self.frame_count % RECT_SLOT_PERIOD == 0) or self.rect_result is None
@@ -1122,7 +1186,7 @@ class PlanBVisionNode:
 
                 now = time.ticks_ms()
                 self._classify_measurement(now, self.rect_result, laser_stamp_before)
-                self.send_observation(now)
+                self.send_observation(now, capture_ms)
 
                 self.frame_count += 1
                 self.display_ms = 0.0
