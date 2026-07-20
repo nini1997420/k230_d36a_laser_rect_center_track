@@ -75,8 +75,18 @@ PLOT_INTERVAL_MS = 30
 STATUS_INTERVAL_MS = 1200
 DIAG_INTERVAL_MS = 200
 ENABLE_DIAG_PACKET = True
+# plot/diag 继续通过UART发送，但不在IDE终端高频回显。
+UART_ECHO_TELEMETRY = False
 GC_CHECK_INTERVAL_FRAMES = 90
 GC_FREE_THRESHOLD = 190000
+
+STATE_NAMES = {
+    0: "SEARCH/LOST",
+    1: "ACQUIRE",
+    2: "TRACK",
+    3: "HOLD",
+    4: "STOP/FAULT",
+}
 
 # ============================================================
 # 2. D36A STEP/DIR/激光 GPIO
@@ -452,11 +462,14 @@ class UARTLink:
         return self.uart is not None
 
     def send(self, text):
-        print(text)
+        message = str(text)
+        is_telemetry = message.startswith("[plot,") or message.startswith("[diag,")
+        if UART_ECHO_TELEMETRY or not is_telemetry:
+            print(message)
         if self.uart is None:
             return False
         try:
-            self.uart.write((str(text) + "\r\n").encode("utf-8"))
+            self.uart.write((message + "\r\n").encode("utf-8"))
             self.tx_packets += 1
             return True
         except Exception as e:
@@ -1794,14 +1807,15 @@ class K230D36ALaserRectTrackerV10:
         if ticks_diff_ms(now, self.last_status_ms) < STATUS_INTERVAL_MS:
             return
         self.last_status_ms = now
+        state_name = STATE_NAMES.get(int(state_code), "UNKNOWN")
         rp = rect_result.get("center") if rect_result else None
         lp = self.current_laser_pos
         if rp is not None and lp is not None:
-            print("STAT v10 state=%d err=(%.1f,%.1f) rect=(%.1f,%.1f) laser=(%.1f,%.1f) out=(%.0f,%.0f) cand=%d/%d fps=%.1f" % (
-                state_code, rp[0] - lp[0] + CTRL_CFG["aim_offset_x"], rp[1] - lp[1] + CTRL_CFG["aim_offset_y"], rp[0], rp[1], lp[0], lp[1], self.x_axis.applied_hz, self.y_axis.applied_hz, self.rect.candidate_count, self.laser.candidate_count, self.fps))
+            print("STAT v10 state=%s(%d) err=(%.1f,%.1f) rect=(%.1f,%.1f) laser=(%.1f,%.1f) out=(%.0f,%.0f) cand=%d/%d fps=%.1f" % (
+                state_name, state_code, rp[0] - lp[0] + CTRL_CFG["aim_offset_x"], rp[1] - lp[1] + CTRL_CFG["aim_offset_y"], rp[0], rp[1], lp[0], lp[1], self.x_axis.applied_hz, self.y_axis.applied_hz, self.rect.candidate_count, self.laser.candidate_count, self.fps))
         else:
-            print("STAT v10 state=%d rect=%d laser=%d out=(%.0f,%.0f) cand=%d/%d fps=%.1f" % (
-                state_code, 1 if rp is not None else 0, 1 if lp is not None else 0, self.x_axis.applied_hz, self.y_axis.applied_hz, self.rect.candidate_count, self.laser.candidate_count, self.fps))
+            print("STAT v10 state=%s(%d) rect=%d laser=%d out=(%.0f,%.0f) cand=%d/%d fps=%.1f" % (
+                state_name, state_code, 1 if rp is not None else 0, 1 if lp is not None else 0, self.x_axis.applied_hz, self.y_axis.applied_hz, self.rect.candidate_count, self.laser.candidate_count, self.fps))
 
     def draw(self, img, rect_result, state_code):
         try:
